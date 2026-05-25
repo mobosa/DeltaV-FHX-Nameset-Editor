@@ -1,0 +1,26 @@
+# Build artifacts
+build/
+dist/
+*.spec.bak
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# Claude
+.claude/
+
+# Sample data files
+*.fhx
+*.xlsx
+error.txt
+
+# OS
+Thumbs.db
+Desktop.ini

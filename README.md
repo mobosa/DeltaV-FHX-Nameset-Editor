@@ -1,0 +1,58 @@
+# DeltaV FHX Nameset Editor
+
+批量编辑 DeltaV FHX 配置文件中的 nameset 值。典型用途是将中文 nameset 值翻译为英文，解决 DeltaV 不支持中文字符导致的导入错误。也可用于英文环境下的 nameset 值批量修改。
+
+## 功能
+
+- **Setup** — 编辑 ENUMERATION_SET 定义中的值名称
+- **Library** — 编辑 ENUMERATION_SET 定义 + STRING_VALUE 引用 + 表达式引用
+- **Control Strategies** — 编辑 STRING_VALUE 引用
+
+## 工作流程
+
+```
+Step 1: 对比中文 FHX 与英文 Setup → 导出 Excel（自动填充英文建议值）
+    ↓
+用户在 Excel 中审核/修改 "New Value" 列
+    ↓
+Step 2: 读取 Excel → 生成新的英文 FHX 文件
+```
+
+## 快速开始
+
+### 使用打包好的 exe
+
+1. 下载 `DeltaV_FHX_Nameset_Editor.exe`
+2. 双击运行
+3. 选择标签页 → 加载 FHX + Setup → 点击 "Compare and Export Excel"
+4. 编辑 Excel 中的 "New Value" 列
+5. 回到工具 → 点击 "Generate New FHX"
+
+### 从源码运行
+
+```bash
+pip install openpyxl
+python fhx_migrator.py
+```
+
+### 打包 exe
+
+```bash
+pip install pyinstaller
+pyinstaller FHX_Migration_Tool.spec --noconfirm
+```
+
+生成的 exe 在 `dist/` 目录下。
+
+## 项目结构
+
+```
+fhx_migrator.py              # 主程序（GUI + 逻辑）
+FHX_Migration_Tool.spec      # PyInstaller 打包配置
+exp_logo.ico                  # 程序图标
+使用说明.md                   # 详细使用说明
+```
+
+## 详细文档
+
+参见 [使用说明.md](使用说明.md)
