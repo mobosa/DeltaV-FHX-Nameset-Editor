@@ -729,7 +729,7 @@ DELTA_VALUE_CN_TO_EN = {
         '电源故障': 'Powerfail',
     },
     '$time': {
-        '秒': 'Second', '分': 'Minute',
+        '秒': 'Seconds', '分': 'Minutes', '时': 'Hours',
     },
 }
 
