@@ -82,3 +82,7 @@ exp_logo.png                  # 程序图标（PNG）
 ## 详细文档
 
 参见 [使用说明.md](使用说明.md)
+
+## 作者
+
+Jared.Ji
