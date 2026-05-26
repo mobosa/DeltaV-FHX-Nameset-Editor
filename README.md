@@ -85,4 +85,4 @@ exp_logo.png                  # 程序图标（PNG）
 
 ## 作者
 
-Jared.Ji
+Jared.Ji (Jared.Ji@emerson.com)

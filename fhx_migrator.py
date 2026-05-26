@@ -2601,7 +2601,7 @@ class FHX_Migrator_App:
         nb.add(tab_cs, text=" Control Strategies ")
         self._build_tab3(tab_cs)
 
-        author_label = tk.Label(self.root, text="Author: Jared.Ji", fg="gray", font=("Arial", 9))
+        author_label = tk.Label(self.root, text="Author: Jared.Ji (Jared.Ji@emerson.com)", fg="gray", font=("Arial", 9))
         author_label.pack(side=tk.BOTTOM, pady=(0, 5))
 
     def _build_tab_setup(self, parent):
