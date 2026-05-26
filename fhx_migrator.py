@@ -241,9 +241,25 @@ def compare_and_export(fhx_path, setup_path, output_path, log_callback=None, pro
             'description': fhx_def_desc,
         })
 
+    # Extract and compare alarm types
+    progress(75, 'Extracting alarm types...')
+    fhx_alarms = extract_alarms(fhx_content)
+    setup_alarms = extract_alarms(setup_content)
+    alarm_comparison = compare_alarms(fhx_alarms, setup_alarms)
+    log(f"  FHX alarms: {len(fhx_alarms)}, Setup alarms: {len(setup_alarms)}")
+
+    # Extract PRIORITY_NAME values
+    fhx_priorities = extract_priority_names(fhx_content)
+    setup_priorities = extract_priority_names(setup_content)
+    priority_comparison = compare_priority_names(fhx_priorities, setup_priorities)
+    # Fill actual counts
+    for item in priority_comparison:
+        item['count'] = fhx_content.count(f'PRIORITY_NAME="{item["old_value"]}"')
+    log(f"  FHX priorities: {len(fhx_priorities)}, Setup priorities: {len(setup_priorities)}")
+
     # Write Excel
     progress(80, 'Writing Excel...')
-    write_comparison_excel(nameset_comparison, output_path)
+    write_comparison_excel(nameset_comparison, output_path, alarm_comparison, priority_comparison)
 
     progress(100, 'Done')
     log(f"\nExcel exported: {output_path}")
@@ -267,7 +283,7 @@ def compare_and_export(fhx_path, setup_path, output_path, log_callback=None, pro
     return nameset_comparison
 
 
-def write_comparison_excel(nameset_comparison, output_path):
+def write_comparison_excel(nameset_comparison, output_path, alarm_comparison=None, priority_comparison=None):
     """Write comparison data to Excel."""
     wb = Workbook()
     ws = wb.active
@@ -341,6 +357,11 @@ def write_comparison_excel(nameset_comparison, output_path):
     if nameset_comparison:
         ws.auto_filter.ref = f"A1:F{len(nameset_comparison) + 1}"
 
+    write_alarm_types_sheet(wb, alarm_comparison, header_fill, header_font, thin_border,
+                            yellow_fill, green_fill, red_fill)
+
+    write_priority_names_sheet(wb, priority_comparison, header_fill, header_font, thin_border, yellow_fill)
+
     wb.save(output_path)
     ok, err = validate_xlsx(output_path)
     if not ok:
@@ -351,7 +372,7 @@ def write_comparison_excel(nameset_comparison, output_path):
 # Read edited Excel and generate new FHX
 # ============================================================
 def read_edited_excel(excel_path):
-    """Read edited Excel file. Returns (nameset_changes, new_namesets, desc_changes).
+    """Read edited Excel file. Returns (nameset_changes, new_namesets, desc_changes, alarm_changes, priority_changes).
     nameset_changes: dict of (set_name, old_entry) -> new_entry
     new_namesets: list of dicts with 'name', 'category', 'entries', 'description'
     desc_changes: dict of set_name -> new_description
@@ -360,6 +381,8 @@ def read_edited_excel(excel_path):
     nameset_changes = {}
     new_namesets = []
     desc_changes = {}
+    alarm_changes = read_alarm_types_excel(wb)
+    priority_changes = read_priority_names_excel(wb)
 
     if "Namesets" in wb.sheetnames:
         ws = wb["Namesets"]
@@ -413,11 +436,11 @@ def read_edited_excel(excel_path):
                 desc_changes[set_name] = desc_str
 
     wb.close()
-    return nameset_changes, new_namesets, desc_changes
+    return nameset_changes, new_namesets, desc_changes, alarm_changes, priority_changes
 
 
 def generate_new_fhx(fhx_path, setup_path, nameset_changes, new_namesets, desc_changes, output_path,
-                     log_callback=None, progress_callback=None):
+                     alarm_changes=None, priority_changes=None, log_callback=None, progress_callback=None):
     """Generate new FHX with replaced ENTRY NAME, added ENUMERATION_SET blocks, and updated DESCRIPTION."""
     def log(msg):
         if log_callback:
@@ -594,13 +617,26 @@ def generate_new_fhx(fhx_path, setup_path, nameset_changes, new_namesets, desc_c
         added_count += 1
         log(f"  Added new nameset: {name}")
 
+    # Replace alarm values
+    progress(85, 'Replacing alarm values...')
+    alarm_count = 0
+    if alarm_changes:
+        new_content, alarm_count = replace_alarm_values(new_content, alarm_changes)
+        log(f"  Replaced {alarm_count} alarm fields")
+
+    # Replace PRIORITY_NAME values
+    priority_count = 0
+    if priority_changes:
+        new_content, priority_count = replace_priority_names(new_content, priority_changes)
+        log(f"  Replaced {priority_count} PRIORITY_NAME values")
+
     # Write output
     progress(90, 'Writing output...')
     log(f"\nWriting output: {output_path}")
     write_fhx(output_path, new_content)
 
     progress(100, 'Done')
-    log(f"  Done! Replaced {replace_count} values, Replaced {sv_count} STRING_VALUEs, Updated {desc_count} descriptions, Added {added_count} new namesets")
+    log(f"  Done! Replaced {replace_count} values, Replaced {sv_count} STRING_VALUEs, Updated {desc_count} descriptions, Added {added_count} new namesets, Replaced {alarm_count} alarm fields, Replaced {priority_count} PRIORITY_NAME")
 
     return replace_count + sv_count + desc_count + added_count
 
@@ -637,6 +673,281 @@ def extract_expression_refs(content):
             refs[set_name] = {}
         refs[set_name][val] = refs[set_name].get(val, 0) + 1
     return refs
+
+
+def extract_alarms(content):
+    """Extract SYSTEM_ALARM and USER_ALARM blocks. Returns dict: alarm_name -> dict of fields."""
+    alarms = {}
+    for m in re.finditer(r'(SYSTEM_ALARM|USER_ALARM)\s+(?:INDEX=(\d+)\s+)?NAME="([^"]*)"', content):
+        alarm_type = m.group(1)
+        alarm_index = m.group(2)
+        alarm_name = m.group(3)
+        start = m.start()
+        brace_start = content.find('{', start)
+        if brace_start < 0:
+            continue
+        depth = 1
+        pos = brace_start + 1
+        while pos < len(content) and depth > 0:
+            if content[pos] == '{':
+                depth += 1
+            elif content[pos] == '}':
+                depth -= 1
+            pos += 1
+        if depth == 0:
+            block = content[start:pos]
+            fields = {}
+            for field in ('DESCRIPTION', 'ALARM_WORD', 'MESSAGE', 'CATEGORY', 'SUMMARY_NO',
+                          'DEFAULT_PARAM1', 'DEFAULT_PARAM2', 'WAVE_FILE'):
+                fm = re.search(rf'{field}="([^"]*)"', block)
+                if fm:
+                    fields[field] = fm.group(1)
+            fields['ALARM_TYPE'] = alarm_type
+            if alarm_index:
+                fields['INDEX'] = alarm_index
+            alarms[alarm_name] = fields
+    return alarms
+
+
+def compare_alarms(lib_or_cs_alarms, setup_alarms):
+    """Compare alarm definitions. Returns list of dicts for Excel."""
+    comparison = []
+    all_names = sorted(set(list(lib_or_cs_alarms.keys()) + list(setup_alarms.keys())))
+    for name in all_names:
+        old_alarm = lib_or_cs_alarms.get(name, {})
+        new_alarm = setup_alarms.get(name, {})
+        if old_alarm and new_alarm:
+            status = 'Both'
+        elif old_alarm:
+            status = 'Old only'
+        else:
+            status = 'New only'
+        comparison.append({
+            'name': name,
+            'alarm_type': old_alarm.get('ALARM_TYPE', new_alarm.get('ALARM_TYPE', '')),
+            'status': status,
+            'old_description': old_alarm.get('DESCRIPTION', ''),
+            'new_description': new_alarm.get('DESCRIPTION', ''),
+            'old_alarm_word': old_alarm.get('ALARM_WORD', ''),
+            'new_alarm_word': new_alarm.get('ALARM_WORD', ''),
+            'old_message': old_alarm.get('MESSAGE', ''),
+            'new_message': new_alarm.get('MESSAGE', ''),
+            'old_category': old_alarm.get('CATEGORY', ''),
+            'new_category': new_alarm.get('CATEGORY', ''),
+        })
+    return comparison
+
+
+def write_alarm_types_sheet(wb, alarm_comparison, header_fill, header_font, thin_border,
+                            yellow_fill, green_fill, red_fill):
+    """Write the 'Alarm Types' sheet to an existing workbook."""
+    if not alarm_comparison:
+        return
+    ws = wb.create_sheet("Alarm Types")
+    headers = ['Alarm Name', 'Alarm Type', 'Status',
+               'Old Description', 'New Description',
+               'Old Alarm Word', 'New Alarm Word',
+               'Old Message', 'New Message',
+               'Old Category', 'New Category']
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal='center')
+        cell.border = thin_border
+
+    for i, item in enumerate(alarm_comparison, 2):
+        ws.cell(row=i, column=1, value=item['name']).border = thin_border
+        ws.cell(row=i, column=2, value=item.get('alarm_type', '')).border = thin_border
+        status_cell = ws.cell(row=i, column=3, value=item['status'])
+        status_cell.border = thin_border
+        if item['status'] == 'Both':
+            status_cell.fill = green_fill
+        elif item['status'] == 'Old only':
+            status_cell.fill = yellow_fill
+        else:
+            status_cell.fill = red_fill
+
+        for col_idx, field in enumerate(['old_description', 'new_description',
+                                          'old_alarm_word', 'new_alarm_word',
+                                          'old_message', 'new_message',
+                                          'old_category', 'new_category'], 4):
+            cell = ws.cell(row=i, column=col_idx, value=item.get(field, ''))
+            cell.alignment = Alignment(wrap_text=True, vertical='top')
+            cell.border = thin_border
+
+    ws.column_dimensions['A'].width = 30
+    ws.column_dimensions['B'].width = 15
+    ws.column_dimensions['C'].width = 12
+    ws.column_dimensions['D'].width = 30
+    ws.column_dimensions['E'].width = 30
+    ws.column_dimensions['F'].width = 20
+    ws.column_dimensions['G'].width = 20
+    ws.column_dimensions['H'].width = 40
+    ws.column_dimensions['I'].width = 40
+    ws.column_dimensions['J'].width = 15
+    ws.column_dimensions['K'].width = 15
+    ws.freeze_panes = 'A2'
+    ws.auto_filter.ref = f"A1:K{len(alarm_comparison) + 1}"
+
+
+def read_alarm_types_excel(wb):
+    """Read 'Alarm Types' sheet from workbook. Returns dict: alarm_name -> dict of new field values."""
+    alarm_changes = {}
+    if "Alarm Types" not in wb.sheetnames:
+        return alarm_changes
+    ws = wb["Alarm Types"]
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if not row or len(row) < 3:
+            continue
+        name = row[0]
+        if not name:
+            continue
+        name = str(name).strip()
+        new_description = str(row[4]).strip() if len(row) > 4 and row[4] else ''
+        new_alarm_word = str(row[6]).strip() if len(row) > 6 and row[6] else ''
+        new_message = str(row[8]).strip() if len(row) > 8 and row[8] else ''
+        new_category = str(row[10]).strip() if len(row) > 10 and row[10] else ''
+        changes = {}
+        if new_description:
+            changes['DESCRIPTION'] = new_description
+        if new_alarm_word:
+            changes['ALARM_WORD'] = new_alarm_word
+        if new_message:
+            changes['MESSAGE'] = new_message
+        if new_category:
+            changes['CATEGORY'] = new_category
+        if changes:
+            alarm_changes[name] = changes
+    return alarm_changes
+
+
+def extract_priority_names(content):
+    """Extract unique PRIORITY_NAME values from MODULE CLASS definitions. Returns set of values."""
+    names = set()
+    for m in re.finditer(r'PRIORITY_NAME="([^"]*)"', content):
+        val = m.group(1).strip()
+        if val:
+            names.add(val)
+    return names
+
+
+def compare_priority_names(lib_or_cs_names, setup_names):
+    """Compare PRIORITY_NAME values. Returns list of dicts for Excel."""
+    # Build suggested mapping based on standard DeltaV priorities
+    STANDARD_MAP = {
+        chr(0x5371) + chr(0x6025): 'CRITICAL',   # 危急
+        chr(0x8B66) + chr(0x544A): 'WARNING',    # 警告
+        chr(0x63D0) + chr(0x793A): 'ADVISORY',   # 提示
+        chr(0x8BB0) + chr(0x5F55): 'LOG',        # 记录
+    }
+    comparison = []
+    for name in sorted(lib_or_cs_names):
+        if name in setup_names:
+            continue  # Already English, skip
+        suggested = STANDARD_MAP.get(name, '')
+        comparison.append({
+            'old_value': name,
+            'new_value': suggested,
+            'count': content_count(name),
+        })
+    return comparison
+
+
+def content_count(val):
+    """Helper: returns 0 (actual count filled during export)."""
+    return 0
+
+
+def write_priority_names_sheet(wb, priority_comparison, header_fill, header_font, thin_border, yellow_fill):
+    """Write 'Alarm Priorities' sheet to workbook."""
+    if not priority_comparison:
+        return
+    ws = wb.create_sheet("Alarm Priorities")
+    headers = ['Old Priority Name', 'New Priority Name']
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal='center')
+        cell.border = thin_border
+
+    for i, item in enumerate(priority_comparison, 2):
+        ws.cell(row=i, column=1, value=item['old_value']).border = thin_border
+        new_cell = ws.cell(row=i, column=2, value=item['new_value'])
+        new_cell.alignment = Alignment(wrap_text=True, vertical='top')
+        new_cell.border = thin_border
+        if not item['new_value']:
+            new_cell.fill = yellow_fill
+
+    ws.column_dimensions['A'].width = 30
+    ws.column_dimensions['B'].width = 30
+    ws.freeze_panes = 'A2'
+    ws.auto_filter.ref = f"A1:B{len(priority_comparison) + 1}"
+
+
+def read_priority_names_excel(wb):
+    """Read 'Alarm Priorities' sheet. Returns dict: old_value -> new_value."""
+    changes = {}
+    if "Alarm Priorities" not in wb.sheetnames:
+        return changes
+    ws = wb["Alarm Priorities"]
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if not row or len(row) < 2:
+            continue
+        old_val = str(row[0]).strip() if row[0] else ''
+        new_val = str(row[1]).strip() if len(row) > 1 and row[1] else ''
+        if old_val and new_val and old_val != new_val:
+            changes[old_val] = new_val
+    return changes
+
+
+def replace_priority_names(content, priority_changes):
+    """Replace PRIORITY_NAME values in MODULE CLASS definitions."""
+    count = 0
+    for old_val, new_val in priority_changes.items():
+        old_pattern = f'PRIORITY_NAME="{old_val}"'
+        new_pattern = f'PRIORITY_NAME="{new_val}"'
+        n = content.count(old_pattern)
+        content = content.replace(old_pattern, new_pattern)
+        count += n
+    return content, count
+
+
+def replace_alarm_values(content, alarm_changes):
+    """Replace DESCRIPTION, ALARM_WORD, MESSAGE, CATEGORY in SYSTEM_ALARM/USER_ALARM blocks."""
+    replace_count = 0
+    for alarm_name, changes in alarm_changes.items():
+        escaped_name = re.escape(alarm_name)
+        pattern = r'(SYSTEM_ALARM|USER_ALARM)\s+(?:INDEX=\d+\s+)?NAME="' + escaped_name + r'"'
+        m = re.search(pattern, content)
+        if not m:
+            continue
+        alarm_type = m.group(1)
+        start = m.start()
+        brace_pos = content.find('{', start)
+        if brace_pos < 0:
+            continue
+        depth = 1
+        pos = brace_pos + 1
+        while pos < len(content) and depth > 0:
+            if content[pos] == '{':
+                depth += 1
+            elif content[pos] == '}':
+                depth -= 1
+            pos += 1
+        if depth != 0:
+            continue
+        block = content[start:pos]
+        for field, new_val in changes.items():
+            fm = re.search(rf'{field}="[^"]*"', block)
+            if fm:
+                old_val = fm.group(0)
+                new_field = f'{field}="{new_val}"'
+                block = block.replace(old_val, new_field, 1)
+                replace_count += 1
+        content = content[:start] + block + content[pos:]
+    return content, replace_count
 
 
 # Hardcoded Chinese→English mapping for standard DeltaV nameset values
@@ -1073,12 +1384,28 @@ def compare_cs_and_export(cs_path, setup_path, output_path, log_callback=None, p
                 'setup_entries': '\n'.join(setup_entries),
             })
 
+    # Extract and compare alarm types
+    progress(72, 'Extracting alarm types...')
+    cs_alarms = extract_alarms(cs_content)
+    setup_alarms = extract_alarms(setup_content)
+    alarm_comparison = compare_alarms(cs_alarms, setup_alarms)
+    log(f"  CS alarms: {len(cs_alarms)}, Setup alarms: {len(setup_alarms)}")
+
+    # Extract PRIORITY_NAME values
+    cs_priorities = extract_priority_names(cs_content)
+    setup_priorities = extract_priority_names(setup_content)
+    priority_comparison = compare_priority_names(cs_priorities, setup_priorities)
+    for item in priority_comparison:
+        item['count'] = cs_content.count(f'PRIORITY_NAME="{item["old_value"]}"')
+    log(f"  CS priorities: {len(cs_priorities)}, Setup priorities: {len(setup_priorities)}")
+
     progress(75, 'Writing Excel...')
-    write_cs_comparison_excel(comparison, expr_comparison, output_path)
+    write_cs_comparison_excel(comparison, expr_comparison, output_path, alarm_comparison, priority_comparison)
 
     progress(100, 'Done')
     log(f"\nExcel exported: {output_path}")
     log(f"  STRING_VALUE refs: {len(comparison)}")
+    log(f"  Alarm types: {len(alarm_comparison)}")
     log(f"  Expression refs: {len(expr_comparison)}")
 
     # List all nameset values line by line for manual review
@@ -1110,7 +1437,7 @@ def compare_cs_and_export(cs_path, setup_path, output_path, log_callback=None, p
     return comparison, expr_comparison
 
 
-def write_cs_comparison_excel(comparison, expr_comparison, output_path):
+def write_cs_comparison_excel(comparison, expr_comparison, output_path, alarm_comparison=None, priority_comparison=None):
     """Write Control Strategies comparison to Excel with two sheets."""
     wb = Workbook()
     ws = wb.active
@@ -1123,6 +1450,8 @@ def write_cs_comparison_excel(comparison, expr_comparison, output_path):
     header_fill = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')
     header_font = Font(color='FFFFFF', bold=True, size=11)
     yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+    green_fill = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')
+    red_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
     light_blue_fill = PatternFill(start_color='DAEEF3', end_color='DAEEF3', fill_type='solid')
 
     headers = ['SET Name', 'Current Value', 'Count', 'New Value', 'Setup Entries', 'Description']
@@ -1218,6 +1547,11 @@ def write_cs_comparison_excel(comparison, expr_comparison, output_path):
         ws2.freeze_panes = 'A2'
         ws2.auto_filter.ref = f"A1:F{len(expr_comparison) + 1}"
 
+    write_alarm_types_sheet(wb, alarm_comparison, header_fill, header_font, thin_border,
+                            yellow_fill, green_fill, red_fill)
+
+    write_priority_names_sheet(wb, priority_comparison, header_fill, header_font, thin_border, yellow_fill)
+
     wb.save(output_path)
     ok, err = validate_xlsx(output_path)
     if not ok:
@@ -1225,10 +1559,12 @@ def write_cs_comparison_excel(comparison, expr_comparison, output_path):
 
 
 def read_cs_edited_excel(excel_path):
-    """Read edited Control Strategies Excel. Returns (sv_changes, expr_changes)."""
+    """Read edited Control Strategies Excel. Returns (sv_changes, expr_changes, alarm_changes, priority_changes)."""
     wb = _safe_load_workbook(excel_path)
     sv_changes = []
     expr_changes = []
+    alarm_changes = read_alarm_types_excel(wb)
+    priority_changes = read_priority_names_excel(wb)
 
     if "String Values" in wb.sheetnames:
         ws = wb["String Values"]
@@ -1263,10 +1599,10 @@ def read_cs_edited_excel(excel_path):
                 expr_changes.append((set_name, current_value, new_value))
 
     wb.close()
-    return sv_changes, expr_changes
+    return sv_changes, expr_changes, alarm_changes, priority_changes
 
 
-def generate_new_cs_fhx(cs_path, sv_changes, expr_changes, output_path, setup_path=None, log_callback=None, progress_callback=None):
+def generate_new_cs_fhx(cs_path, sv_changes, expr_changes, output_path, setup_path=None, alarm_changes=None, priority_changes=None, log_callback=None, progress_callback=None):
     """Generate new Control Strategies FHX with replaced STRING_VALUE and expression refs."""
     def log(msg):
         if log_callback:
@@ -1382,12 +1718,24 @@ def generate_new_cs_fhx(cs_path, sv_changes, expr_changes, output_path, setup_pa
             expr_count += count
             log(f"  {set_name}: {old_val_name} -> {new_val_name} ({count} expression occurrences)")
 
+    # Replace alarm values
+    alarm_count = 0
+    if alarm_changes:
+        new_content, alarm_count = replace_alarm_values(new_content, alarm_changes)
+        log(f"  Replaced {alarm_count} alarm fields")
+
+    # Replace PRIORITY_NAME values
+    priority_count = 0
+    if priority_changes:
+        new_content, priority_count = replace_priority_names(new_content, priority_changes)
+        log(f"  Replaced {priority_count} PRIORITY_NAME values")
+
     progress(90, 'Writing output...')
     log(f"\nWriting output: {output_path}")
     write_fhx(output_path, new_content)
 
     progress(100, 'Done')
-    log(f"  Done! Replaced {replace_count} STRING_VALUE, Replaced {expr_count} expression refs")
+    log(f"  Done! Replaced {replace_count} STRING_VALUE, Replaced {expr_count} expression refs, Replaced {alarm_count} alarm fields, Replaced {priority_count} PRIORITY_NAME")
 
     return replace_count
 
@@ -1577,13 +1925,29 @@ def compare_lib_and_export(lib_path, setup_path, output_path, log_callback=None,
                 'setup_entries': '\n'.join(setup_entries) if setup_entries else '\n'.join(lib_enum_defs.get(set_name, {}).get('entries', [])),
             })
 
+    # Extract and compare alarm types
+    progress(78, 'Extracting alarm types...')
+    lib_alarms = extract_alarms(lib_content)
+    setup_alarms = extract_alarms(setup_content)
+    alarm_comparison = compare_alarms(lib_alarms, setup_alarms)
+    log(f"  Library alarms: {len(lib_alarms)}, Setup alarms: {len(setup_alarms)}")
+
+    # Extract PRIORITY_NAME values
+    lib_priorities = extract_priority_names(lib_content)
+    setup_priorities = extract_priority_names(setup_content)
+    priority_comparison = compare_priority_names(lib_priorities, setup_priorities)
+    for item in priority_comparison:
+        item['count'] = lib_content.count(f'PRIORITY_NAME="{item["old_value"]}"')
+    log(f"  Library priorities: {len(lib_priorities)}, Setup priorities: {len(setup_priorities)}")
+
     # Write Excel with three sheets
     progress(80, 'Writing Excel...')
-    write_lib_comparison_excel(nameset_comparison, sv_comparison, expr_comparison, output_path)
+    write_lib_comparison_excel(nameset_comparison, sv_comparison, expr_comparison, output_path, alarm_comparison, priority_comparison)
 
     progress(100, 'Done')
     log(f"\nExcel exported: {output_path}")
     log(f"  ENUMERATION_SET definitions: {len(nameset_comparison)}")
+    log(f"  Alarm types: {len(alarm_comparison)}")
     log(f"  STRING_VALUE references: {len(sv_comparison)}")
     log(f"  Expression references: {len(expr_comparison)}")
 
@@ -1628,7 +1992,7 @@ def compare_lib_and_export(lib_path, setup_path, output_path, log_callback=None,
     return nameset_comparison, sv_comparison, expr_comparison
 
 
-def write_lib_comparison_excel(nameset_comparison, sv_comparison, expr_comparison, output_path):
+def write_lib_comparison_excel(nameset_comparison, sv_comparison, expr_comparison, output_path, alarm_comparison=None, priority_comparison=None):
     """Write Library comparison to Excel with three sheets."""
     wb = Workbook()
 
@@ -1789,6 +2153,11 @@ def write_lib_comparison_excel(nameset_comparison, sv_comparison, expr_compariso
     if expr_comparison:
         ws3.auto_filter.ref = f"A1:F{len(expr_comparison) + 1}"
 
+    write_alarm_types_sheet(wb, alarm_comparison, header_fill, header_font, thin_border,
+                            yellow_fill, green_fill, red_fill)
+
+    write_priority_names_sheet(wb, priority_comparison, header_fill, header_font, thin_border, yellow_fill)
+
     wb.save(output_path)
     ok, err = validate_xlsx(output_path)
     if not ok:
@@ -1796,13 +2165,15 @@ def write_lib_comparison_excel(nameset_comparison, sv_comparison, expr_compariso
 
 
 def read_lib_edited_excel(excel_path):
-    """Read edited Library Excel. Returns (nameset_changes, new_namesets, desc_changes, sv_changes, expr_changes)."""
+    """Read edited Library Excel. Returns (nameset_changes, new_namesets, desc_changes, sv_changes, expr_changes, alarm_changes, priority_changes)."""
     wb = _safe_load_workbook(excel_path)
     nameset_changes = {}
     new_namesets = []
     desc_changes = {}
     sv_changes = []
     expr_changes = []
+    alarm_changes = read_alarm_types_excel(wb)
+    priority_changes = read_priority_names_excel(wb)
 
     # Read Namesets sheet
     if "Namesets" in wb.sheetnames:
@@ -1898,11 +2269,11 @@ def read_lib_edited_excel(excel_path):
                 expr_changes.append((set_name, current_value, nv))
 
     wb.close()
-    return nameset_changes, new_namesets, desc_changes, sv_changes, expr_changes
+    return nameset_changes, new_namesets, desc_changes, sv_changes, expr_changes, alarm_changes, priority_changes
 
 
 def generate_new_lib_fhx(lib_path, setup_path, nameset_changes, new_namesets, desc_changes, sv_changes, expr_changes,
-                         output_path, log_callback=None, progress_callback=None):
+                         output_path, alarm_changes=None, priority_changes=None, log_callback=None, progress_callback=None):
     """Generate new Library FHX with replaced ENTRY NAME, added ENUMERATION_SET, updated DESCRIPTION, replaced STRING_VALUE, and replaced expression refs."""
     def log(msg):
         if log_callback:
@@ -2167,15 +2538,27 @@ def generate_new_lib_fhx(lib_path, setup_path, nameset_changes, new_namesets, de
                 expr_count += count
                 log(f"  {ns_name}: {old_val_name} -> {new_val_name} ({count} expression refs from nameset change)")
 
+    # Replace alarm values
+    alarm_count = 0
+    if alarm_changes:
+        new_content, alarm_count = replace_alarm_values(new_content, alarm_changes)
+        log(f"  Replaced {alarm_count} alarm fields")
+
+    # Replace PRIORITY_NAME values
+    priority_count = 0
+    if priority_changes:
+        new_content, priority_count = replace_priority_names(new_content, priority_changes)
+        log(f"  Replaced {priority_count} PRIORITY_NAME values")
+
     # Write output
     progress(90, 'Writing output...')
     log(f"\nWriting output: {output_path}")
     write_fhx(output_path, new_content)
 
     progress(100, 'Done')
-    log(f"  Done! Replaced {replace_count} ENTRY NAME, Updated {desc_count} descriptions, Added {added_count} new namesets, Replaced {sv_count} STRING_VALUE, Replaced {expr_count} expression refs")
+    log(f"  Done! Replaced {replace_count} ENTRY NAME, Updated {desc_count} descriptions, Added {added_count} new namesets, Replaced {sv_count} STRING_VALUE, Replaced {expr_count} expression refs, Replaced {alarm_count} alarm fields, Translated {priority_count} PRIORITY_NAME")
 
-    return replace_count + desc_count + added_count + sv_count + expr_count
+    return replace_count + desc_count + added_count + sv_count + expr_count + alarm_count + priority_count
 
 
 # ============================================================
@@ -2538,15 +2921,16 @@ class FHX_Migrator_App:
 
     def _generate_worker(self, fhx_path, setup_path, excel_path, output_path):
         try:
-            nameset_changes, new_namesets, desc_changes = read_edited_excel(excel_path)
-            self.root.after(0, self._log, self.log1, f"Loaded {len(nameset_changes)} value changes, {len(new_namesets)} new namesets, {len(desc_changes)} description changes")
+            nameset_changes, new_namesets, desc_changes, alarm_changes, priority_changes = read_edited_excel(excel_path)
+            self.root.after(0, self._log, self.log1, f"Loaded {len(nameset_changes)} value changes, {len(new_namesets)} new namesets, {len(desc_changes)} description changes, {len(alarm_changes)} alarm changes, {len(priority_changes)} priority changes")
 
-            if not nameset_changes and not new_namesets and not desc_changes:
+            if not nameset_changes and not new_namesets and not desc_changes and not alarm_changes and not priority_changes:
                 self.root.after(0, messagebox.showinfo, "Info", "No changes found in Excel.")
                 return
 
             count = generate_new_fhx(
                 fhx_path, setup_path, nameset_changes, new_namesets, desc_changes, output_path,
+                alarm_changes=alarm_changes, priority_changes=priority_changes,
                 log_callback=lambda m: self.root.after(0, self._log, self.log1, m),
                 progress_callback=lambda p, t: self.root.after(0, self._update_progress, self.progress1, self.prog_label1, p, t)
             )
@@ -2643,16 +3027,16 @@ class FHX_Migrator_App:
 
     def _cs_generate_worker(self, cs_path, excel_path, output_path, setup_path=None):
         try:
-            sv_changes, expr_changes = read_cs_edited_excel(excel_path)
-            self.root.after(0, self._log, self.log3, f"Loaded {len(sv_changes)} STRING_VALUE changes, {len(expr_changes)} expression changes")
+            sv_changes, expr_changes, alarm_changes, priority_changes = read_cs_edited_excel(excel_path)
+            self.root.after(0, self._log, self.log3, f"Loaded {len(sv_changes)} STRING_VALUE changes, {len(expr_changes)} expression changes, {len(alarm_changes)} alarm changes, {len(priority_changes)} priority changes")
 
-            if not sv_changes and not expr_changes:
+            if not sv_changes and not expr_changes and not alarm_changes and not priority_changes:
                 self.root.after(0, messagebox.showinfo, "Info", "No changes found in Excel.")
                 return
 
             count = generate_new_cs_fhx(
                 cs_path, sv_changes, expr_changes, output_path,
-                setup_path=setup_path,
+                setup_path=setup_path, alarm_changes=alarm_changes, priority_changes=priority_changes,
                 log_callback=lambda m: self.root.after(0, self._log, self.log3, m),
                 progress_callback=lambda p, t: self.root.after(0, self._update_progress, self.progress3, self.prog_label3, p, t)
             )
@@ -2756,15 +3140,16 @@ class FHX_Migrator_App:
 
     def _lib_generate_worker(self, lib_path, setup_path, excel_path, output_path):
         try:
-            nameset_changes, new_namesets, desc_changes, sv_changes, expr_changes = read_lib_edited_excel(excel_path)
-            self.root.after(0, self._log, self.log4, f"Loaded {len(nameset_changes)} value changes, {len(new_namesets)} new namesets, {len(desc_changes)} description changes, {len(sv_changes)} STRING_VALUE changes, {len(expr_changes)} expression changes")
+            nameset_changes, new_namesets, desc_changes, sv_changes, expr_changes, alarm_changes, priority_changes = read_lib_edited_excel(excel_path)
+            self.root.after(0, self._log, self.log4, f"Loaded {len(nameset_changes)} value changes, {len(new_namesets)} new namesets, {len(desc_changes)} description changes, {len(sv_changes)} STRING_VALUE changes, {len(expr_changes)} expression changes, {len(alarm_changes)} alarm changes, {len(priority_changes)} priority changes")
 
-            if not nameset_changes and not new_namesets and not desc_changes and not sv_changes and not expr_changes:
+            if not nameset_changes and not new_namesets and not desc_changes and not sv_changes and not expr_changes and not alarm_changes and not priority_changes:
                 self.root.after(0, messagebox.showinfo, "Info", "No changes found in Excel.")
                 return
 
             count = generate_new_lib_fhx(
                 lib_path, setup_path, nameset_changes, new_namesets, desc_changes, sv_changes, expr_changes, output_path,
+                alarm_changes=alarm_changes, priority_changes=priority_changes,
                 log_callback=lambda m: self.root.after(0, self._log, self.log4, m),
                 progress_callback=lambda p, t: self.root.after(0, self._update_progress, self.progress4, self.prog_label4, p, t)
             )
@@ -2852,9 +3237,10 @@ def main():
 
         elif args.command == 'generate':
             output = args.output or os.path.splitext(args.fhx)[0] + '_NEW' + os.path.splitext(args.fhx)[1]
-            nameset_changes, new_namesets, desc_changes = read_edited_excel(args.excel)
+            nameset_changes, new_namesets, desc_changes, alarm_changes, priority_changes = read_edited_excel(args.excel)
             count = generate_new_fhx(
                 args.fhx, args.setup, nameset_changes, new_namesets, desc_changes, output,
+                alarm_changes=alarm_changes, priority_changes=priority_changes,
                 log_callback=print, progress_callback=cli_progress
             )
             print(f"\nOutput: {output}")
@@ -2872,10 +3258,10 @@ def main():
 
         elif args.command == 'cs-generate':
             output = args.output or os.path.splitext(args.fhx)[0] + '_NEW' + os.path.splitext(args.fhx)[1]
-            sv_changes, expr_changes = read_cs_edited_excel(args.excel)
+            sv_changes, expr_changes, alarm_changes, priority_changes = read_cs_edited_excel(args.excel)
             count = generate_new_cs_fhx(
                 args.fhx, sv_changes, expr_changes, output,
-                setup_path=args.setup,
+                setup_path=args.setup, alarm_changes=alarm_changes, priority_changes=priority_changes,
                 log_callback=print, progress_callback=cli_progress
             )
             print(f"\nOutput: {output}")
@@ -2894,9 +3280,10 @@ def main():
 
         elif args.command == 'lib-generate':
             output = args.output or os.path.splitext(args.fhx)[0] + '_NEW' + os.path.splitext(args.fhx)[1]
-            nameset_changes, new_namesets, desc_changes, sv_changes, expr_changes = read_lib_edited_excel(args.excel)
+            nameset_changes, new_namesets, desc_changes, sv_changes, expr_changes, alarm_changes, priority_changes = read_lib_edited_excel(args.excel)
             count = generate_new_lib_fhx(
                 args.fhx, args.setup, nameset_changes, new_namesets, desc_changes, sv_changes, expr_changes, output,
+                alarm_changes=alarm_changes, priority_changes=priority_changes,
                 log_callback=print, progress_callback=cli_progress
             )
             print(f"\nOutput: {output}")
