@@ -1,6 +1,6 @@
 # DeltaV FHX Nameset Editor
 
-批量翻译/编辑 DeltaV FHX 配置文件中的 nameset 值。主要面向 Emerson DeltaV 系统工程师，用于将中文 nameset 值迁移为英文，解决 DeltaV 导入时的字符集错误。
+批量翻译/编辑 DeltaV FHX 配置文件中的 nameset 值。面向 Emerson DeltaV 系统工程师，用于将中文 nameset 值迁移为英文，解决 DeltaV 导入时的字符集错误。支持任何 FHX 类型（Library、Control Strategies、Setup、Recipes 等），自动识别并处理。
 
 ## 功能特性
 
@@ -9,18 +9,19 @@
 - **表达式引用翻译** — 替换 `'$phase_state:正在保持'` 等表达式中的中文值
 - **报警块翻译** — SYSTEM_ALARM / USER_ALARM 的 DESCRIPTION、ALARM_WORD、MESSAGE、CATEGORY
 - **优先级名称翻译** — 危急→CRITICAL、警告→WARNING、提示→ADVISORY、记录→LOG
-- **LOCALE 替换** — 根据目标 Setup.fhx 替换 locale 字符串
+- **LOCALE 替换** — 根据 New Database.fhx 替换 locale 字符串
 - **新 nameset 添加** — 支持在 FHX 中新增完整的 ENUMERATION_SET 定义块
 - **内建标准 DeltaV nameset 映射** — `$phase_state`、`$recipe_state`、`$sfc_action_states` 等 20+ 套标准 nameset 自动翻译，无需手动填写
+- **自动处理任意 FHX 类型** — Library、Control Strategies、Setup、Recipes 等，无需手动选择类型
 
 ## 工作流程
 
 ```
-Step 1: 对比 FHX 与 Setup.fhx → 导出 Excel（自动填充英文建议值）
+Step 1: 对比任意 FHX 与 New Database.fhx → 导出 Excel（自动填充英文建议值）
     ↓
 用户在 Excel 中审核/修改 "New Value" 列
     ↓
-Step 2: 读取 Excel → 生成新的英文 FHX 文件（后缀 _NEW）
+Step 2: 读取 Excel → 生成新的 FHX 文件（后缀 _NEW）
 ```
 
 ## 快速开始
@@ -29,9 +30,9 @@ Step 2: 读取 Excel → 生成新的英文 FHX 文件（后缀 _NEW）
 
 1. 下载 `DeltaV_FHX_Nameset_Editor.exe`（见 [Releases](https://github.com/mobosa/delta-v-fhx-nameset-editor/releases)）
 2. 双击运行，无需安装 Python
-3. **Step 1 区域**：选择 FHX 文件 + Setup.fhx → 点击 **Compare and Export Excel**
+3. **Step 1 区域**：选择 FHX 文件 + New Database.fhx → 点击 **Compare and Export Excel**
 4. 打开生成的 Excel，审核/修改 `New Value` 列
-5. **Step 2 区域**：选择 FHX + Setup.fhx + 编辑后的 Excel → 点击 **Generate New FHX**
+5. **Step 2 区域**：选择 FHX + New Database.fhx + 编辑后的 Excel → 点击 **Generate New FHX**
 
 ### 从源码运行
 
@@ -46,19 +47,21 @@ python fhx_migrator.py          # 启动 GUI
 
 ```bash
 # 对比并导出 Excel
-python fhx_migrator.py compare Library.fhx --setup Setup.fhx [-o output.xlsx]
+python fhx_migrator.py compare <任意FHX文件> --setup <New Database.fhx> [-o output.xlsx]
 
 # 从编辑后的 Excel 生成新 FHX
-python fhx_migrator.py generate Library.fhx --setup Setup.fhx --excel edited.xlsx [-o output.fhx]
+python fhx_migrator.py generate <任意FHX文件> --setup <New Database.fhx> --excel edited.xlsx [-o output.fhx]
 ```
 
 | 参数 | 说明 |
 |------|------|
-| `compare` | 对比 FHX 与 Setup，导出 Excel |
+| `compare` | 对比任意 FHX 与 New Database.fhx，导出 Excel |
 | `generate` | 读取 Excel 生成新 FHX |
-| `--setup` | 必填。Setup.fhx 参考文件路径 |
+| `--setup` | 必填。New Database.fhx 参考文件路径 |
 | `--excel` | `generate` 必填。编辑后的 Excel 文件路径 |
 | `-o, --output` | 可选。输出文件路径，不指定则自动生成 |
+
+> 注意：旧版的 `cs-compare`、`cs-generate`、`lib-compare`、`lib-generate` 子命令已移除，统一使用 `compare` / `generate`，工具会自动识别 FHX 类型。
 
 ## Excel 输出格式
 
@@ -66,7 +69,7 @@ python fhx_migrator.py generate Library.fhx --setup Setup.fhx --excel edited.xls
 
 | Sheet | 内容 |
 |-------|------|
-| **Namesets** | ENUMERATION_SET 定义对比（FHX 值 vs Setup 值） |
+| **Namesets** | ENUMERATION_SET 定义对比（FHX 值 vs New Database 值） |
 | **String Values** | STRING_VALUE 引用对比 |
 | **Expression Refs** | 表达式引用对比 |
 | **Alarm Types** | SYSTEM_ALARM / USER_ALARM 字段对比 |
@@ -78,6 +81,8 @@ python fhx_migrator.py generate Library.fhx --setup Setup.fhx --excel edited.xls
 - 留空：该行不修改
 
 蓝色底色 = 已有自动建议，黄色底色 = 需手动填写。
+
+生成 FHX 前，工具会自动验证 Excel 数据格式，如发现问题会提示并阻止生成。
 
 ## 打包 exe
 

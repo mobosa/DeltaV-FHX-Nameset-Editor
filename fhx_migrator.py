@@ -1,6 +1,6 @@
 """
 DeltaV FHX Nameset Editor
-Translates Chinese nameset values to English in DeltaV FHX configuration files.
+Translates nameset values between Chinese and English in DeltaV FHX configuration files.
 Handles any FHX type (Library, Control Strategies, Setup, Recipes, etc.) automatically.
 Workflow:
   Step 1: Load FHX + Setup → Compare all nameset values → Export Excel
@@ -514,6 +514,27 @@ DELTA_VALUE_CN_TO_EN = {
 # ============================================================
 # FHX Migration
 # ============================================================
+DELTA_VALUE_EN_TO_CN = {}
+for _set, _map in DELTA_VALUE_CN_TO_EN.items():
+    for _cn, _en in _map.items():
+        DELTA_VALUE_EN_TO_CN.setdefault(_set, {})[_en] = _cn
+del _set, _map, _cn, _en
+
+
+def _bidirectional_translate(set_name, value):
+    """Translate a nameset value bidirectionally based on content.
+    Chinese value → English; English value → Chinese."""
+    if re.search(r'[一-鿿]', value):
+        # Value is Chinese → translate to English
+        if set_name in DELTA_VALUE_CN_TO_EN and value in DELTA_VALUE_CN_TO_EN[set_name]:
+            return DELTA_VALUE_CN_TO_EN[set_name][value], 'en'
+    else:
+        # Value is not Chinese (likely English) → translate to Chinese
+        if set_name in DELTA_VALUE_EN_TO_CN and value in DELTA_VALUE_EN_TO_CN[set_name]:
+            return DELTA_VALUE_EN_TO_CN[set_name][value], 'cn'
+    return None, None
+
+
 def compare_lib_and_export(lib_path, setup_path, output_path, log_callback=None, progress_callback=None):
     """Compare FHX ENUMERATION_SET + STRING_VALUE + Expression refs with Setup. Export Excel with three sheets."""
     def log(msg):
@@ -611,6 +632,11 @@ def compare_lib_and_export(lib_path, setup_path, output_path, log_callback=None,
                         if f'VALUE={val_m.group(1)}' in entry_str:
                             suggested = entry_str
                             break
+            # Fallback: bidirectional translation mapping for standard DeltaV namesets
+            if not suggested and set_name in DELTA_VALUE_CN_TO_EN:
+                trans_val, direction = _bidirectional_translate(set_name, val)
+                if trans_val is not None and trans_val in entry_map:
+                    suggested = entry_map[trans_val]
 
             sv_comparison.append({
                 'set_name': set_name,
@@ -672,19 +698,17 @@ def compare_lib_and_export(lib_path, setup_path, output_path, log_callback=None,
             # Fallback: use Library ENUMERATION_SET entry if not in Setup
             if not suggested and val in lib_entry_map:
                 suggested = lib_entry_map[val]
-            # Fallback: hardcoded Chinese→English mapping for standard DeltaV namesets
+            # Fallback: bidirectional translation mapping for standard DeltaV namesets
             if not suggested and set_name in DELTA_VALUE_CN_TO_EN:
-                cn_map = DELTA_VALUE_CN_TO_EN[set_name]
-                if val in cn_map:
-                    eng_val = cn_map[val]
-                    # Find the Setup entry for this English value
-                    if eng_val in entry_map:
-                        suggested = entry_map[eng_val]
+                trans_val, direction = _bidirectional_translate(set_name, val)
+                if trans_val is not None:
+                    # Find the translated value in Setup entry map
+                    if trans_val in entry_map:
+                        suggested = entry_map[trans_val]
                     elif setup_num_to_name:
-                        # Find by matching name in setup_num_to_name
                         for num, name in setup_num_to_name.items():
-                            if name == eng_val:
-                                suggested = f'VALUE={num} NAME="{eng_val}"'
+                            if name == trans_val:
+                                suggested = f'VALUE={num} NAME="{trans_val}"'
                                 break
 
             expr_comparison.append({
@@ -932,6 +956,228 @@ def write_lib_comparison_excel(nameset_comparison, sv_comparison, expr_compariso
     ok, err = validate_xlsx(output_path)
     if not ok:
         raise RuntimeError(f"Failed to write valid Excel file: {err}")
+
+def validate_excel_for_generation(excel_path, log_callback=None):
+    """Validate Excel data before generating new FHX. Returns (is_valid, errors).
+
+    Checks all sheets for common data issues that would cause problems during generation.
+    Each error is a dict: {'sheet': str, 'row': int, 'column': str, 'message': str}.
+    """
+    def log(msg):
+        if log_callback:
+            log_callback(msg)
+
+    errors = []
+    wb = _safe_load_workbook(excel_path)
+
+    # --- Namesets sheet ---
+    if "Namesets" in wb.sheetnames:
+        ws = wb["Namesets"]
+        seen_namesets = {}  # set_name -> {value_num: row}
+        for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            if not row or len(row) < 5:
+                continue
+            name, category, status, lib_vals_str, new_value = row[:5]
+            if not name:
+                continue
+            set_name = str(name).strip()
+            status_str = str(status).strip() if status else ''
+
+            if new_value:
+                nv_str = str(new_value).strip()
+                # Check for Excel formulas (=VLOOKUP, =IF, =INDEX, etc.)
+                if nv_str.startswith('='):
+                    errors.append({
+                        'sheet': 'Namesets', 'row': row_idx,
+                        'column': 'New Value (E)',
+                        'message': f'Cell contains a formula instead of plain text: "{nv_str[:80]}". '
+                                   f'Formulas cannot be used - please replace with the actual value.',
+                    })
+
+            if status_str in ('', 'New'):
+                # New nameset: must have valid entries in New Value
+                entries_str = new_value if new_value else lib_vals_str
+                if not entries_str:
+                    errors.append({
+                        'sheet': 'Namesets', 'row': row_idx,
+                        'column': 'New Value (E)',
+                        'message': f'New nameset "{set_name}" has no entries in New Value or FHX Values column',
+                    })
+                    continue
+                entries_text = [v.strip() for v in str(entries_str).split('\n') if v.strip()]
+                valid_count = 0
+                seen_nums = {}
+                for line_idx, line in enumerate(entries_text):
+                    m = re.match(r'VALUE=(\d+)\s+NAME="([^"]*)"', line)
+                    if m:
+                        val_num = int(m.group(1))
+                        val_name = m.group(2)
+                        if not val_name:
+                            errors.append({
+                                'sheet': 'Namesets', 'row': row_idx,
+                                'column': 'New Value (E)',
+                                'message': f'Entry has empty NAME: VALUE={val_num} NAME=""',
+                            })
+                        if val_num in seen_nums:
+                            errors.append({
+                                'sheet': 'Namesets', 'row': row_idx,
+                                'column': 'New Value (E)',
+                                'message': f'Duplicate VALUE number {val_num} in nameset "{set_name}" '
+                                           f'(first at line {seen_nums[val_num]}, again at line {line_idx + 1})',
+                            })
+                        else:
+                            seen_nums[val_num] = line_idx + 1
+                        valid_count += 1
+                    else:
+                        errors.append({
+                            'sheet': 'Namesets', 'row': row_idx,
+                            'column': 'New Value (E)',
+                            'message': f'Invalid entry format: "{line}" (expected VALUE=N NAME="...")',
+                        })
+                if valid_count == 0 and entries_text:
+                    errors.append({
+                        'sheet': 'Namesets', 'row': row_idx,
+                        'column': 'New Value (E)',
+                        'message': f'No valid VALUE=N NAME="..." entries found for new nameset "{set_name}"',
+                    })
+            else:
+                # Existing nameset with changes: validate New Value format per line
+                if new_value:
+                    nv_str = str(new_value).strip()
+                    nv_lines = [l.strip() for l in nv_str.split('\n') if l.strip()]
+                    lib_lines = [l.strip() for l in str(lib_vals_str).split('\n') if l.strip()] if lib_vals_str else []
+                    for line_idx, nv_line in enumerate(nv_lines):
+                        # Valid formats: VALUE=N NAME="...", or a simple name (e.g. "STOP")
+                        if not re.match(r'(?:VALUE=\d+\s+NAME="[^"]*"|NAME="[^"]*")', nv_line):
+                            # Could be a simple name - that's okay, will be auto-constructed
+                            # But warn if it contains spaces or special chars that look wrong
+                            if ' ' in nv_line and not nv_line.startswith('VALUE='):
+                                errors.append({
+                                    'sheet': 'Namesets', 'row': row_idx,
+                                    'column': 'New Value (E)',
+                                    'message': f'Dubious entry format (has spaces): "{nv_line}" - '
+                                               f'Expected VALUE=N NAME="..." or simple name',
+                                })
+
+    # --- String Values sheet ---
+    if "String Values" in wb.sheetnames:
+        ws = wb["String Values"]
+        for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            if not row or len(row) < 4:
+                continue
+            set_name, current_value, count, new_value = row[:4]
+            if not set_name or not current_value:
+                continue
+            set_name = str(set_name).strip()
+            current_value = str(current_value).strip()
+            new_value = str(new_value).strip() if new_value else ''
+
+            if not new_value or new_value == current_value:
+                continue
+
+            # Validate new_value format
+            if not re.match(r'(?:VALUE=\d+\s+NAME="[^"]*"|NAME="[^"]*"|[^\s]+)', new_value):
+                errors.append({
+                    'sheet': 'String Values', 'row': row_idx,
+                    'column': 'New Value (D)',
+                    'message': f'Invalid format: "{new_value}" for set "{set_name}", value "{current_value}"',
+                })
+            # Check for Excel formulas
+            if new_value.startswith('='):
+                errors.append({
+                    'sheet': 'String Values', 'row': row_idx,
+                    'column': 'New Value (D)',
+                    'message': f'Cell contains a formula instead of plain text: "{new_value[:80]}". '
+                               f'Formulas cannot be used - please replace with the actual value.',
+                })
+
+    # --- Expression Refs sheet ---
+    if "Expression Refs" in wb.sheetnames:
+        ws = wb["Expression Refs"]
+        for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            if not row or len(row) < 4:
+                continue
+            set_name, current_value, count, new_value = row[:4]
+            if not set_name or not current_value:
+                continue
+            set_name = str(set_name).strip()
+            current_value = str(current_value).strip()
+            new_value = str(new_value).strip() if new_value else ''
+
+            if not new_value or new_value == current_value:
+                continue
+
+            # Validate new_value format
+            if not re.match(r'(?:VALUE=\d+\s+NAME="[^"]*"|NAME="[^"]*"|[^\s]+)', new_value):
+                errors.append({
+                    'sheet': 'Expression Refs', 'row': row_idx,
+                    'column': 'New Value (D)',
+                    'message': f'Invalid format: "{new_value}" for set "{set_name}", value "{current_value}"',
+                })
+            # Check for Excel formulas
+            if new_value.startswith('='):
+                errors.append({
+                    'sheet': 'Expression Refs', 'row': row_idx,
+                    'column': 'New Value (D)',
+                    'message': f'Cell contains a formula instead of plain text: "{new_value[:80]}". '
+                               f'Formulas cannot be used - please replace with the actual value.',
+                })
+
+    # --- Alarm Types sheet ---
+    if "Alarm Types" in wb.sheetnames:
+        ws = wb["Alarm Types"]
+        for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            if not row or len(row) < 3:
+                continue
+            name = row[0]
+            if not name:
+                continue
+            new_desc = row[4] if len(row) > 4 else None
+            new_msg = row[8] if len(row) > 8 else None
+            # Check for formulas in new value cells
+            for col_label, val in [('New Description (E)', new_desc), ('New Message (I)', new_msg)]:
+                if val is not None:
+                    val_str = str(val).strip()
+                    if val_str.startswith('='):
+                        errors.append({
+                            'sheet': 'Alarm Types', 'row': row_idx,
+                            'column': col_label,
+                            'message': f'Alarm "{name}" cell contains a formula: "{val_str[:80]}". '
+                                       f'Formulas cannot be used - please replace with the actual value.',
+                        })
+
+    # --- Alarm Priorities sheet ---
+    if "Alarm Priorities" in wb.sheetnames:
+        ws = wb["Alarm Priorities"]
+        for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            if not row or len(row) < 2:
+                continue
+            old_val = str(row[0]).strip() if row[0] else ''
+            new_val = str(row[1]).strip() if len(row) > 1 and row[1] else ''
+            if old_val and new_val and new_val != old_val:
+                # Check for formula in new value
+                if new_val.startswith('='):
+                    errors.append({
+                        'sheet': 'Alarm Priorities', 'row': row_idx,
+                        'column': 'New Priority Name (B)',
+                        'message': f'Cell contains a formula: "{new_val[:80]}". '
+                                   f'Formulas cannot be used - please replace with the actual value.',
+                    })
+
+    wb.close()
+
+    if errors:
+        log(f"\n{'=' * 60}")
+        log(f"Excel Validation: {len(errors)} issue(s) found")
+        log(f"{'=' * 60}")
+        for e in errors:
+            log(f"  [{e['sheet']}] Row {e['row']}, {e['column']}: {e['message']}")
+        log(f"{'=' * 60}")
+        return False, errors
+    else:
+        log("Excel validation passed - no issues found.")
+        return True, []
+
 
 def read_lib_edited_excel(excel_path):
     """Read edited FHX Excel. Returns (nameset_changes, new_namesets, desc_changes, sv_changes, expr_changes, alarm_changes, priority_changes)."""
@@ -1540,6 +1786,26 @@ class FHX_Migrator_App:
 
     def _lib_generate_worker(self, lib_path, setup_path, excel_path, output_path):
         try:
+            # Validate Excel data before proceeding
+            self.root.after(0, self._log, self.log4, "Validating Excel data...")
+            is_valid, validation_errors = validate_excel_for_generation(
+                excel_path,
+                log_callback=lambda m: self.root.after(0, self._log, self.log4, m),
+            )
+            if not is_valid:
+                error_summary = '\n'.join(
+                    f"[{e['sheet']}] Row {e['row']}, {e['column']}: {e['message']}"
+                    for e in validation_errors[:20]
+                )
+                if len(validation_errors) > 20:
+                    error_summary += f"\n... and {len(validation_errors) - 20} more issues"
+                self.root.after(0, self._log, self.log4,
+                    f"\nGeneration aborted: {len(validation_errors)} issue(s) found in Excel.")
+                self.root.after(0, messagebox.showwarning, "Excel Validation Failed",
+                    f"Found {len(validation_errors)} issue(s) in Excel:\n\n{error_summary}\n\n"
+                    "Please fix these issues and try again.")
+                return
+
             nameset_changes, new_namesets, desc_changes, sv_changes, expr_changes, alarm_changes, priority_changes = read_lib_edited_excel(excel_path)
             self.root.after(0, self._log, self.log4, f"Loaded {len(nameset_changes)} value changes, {len(new_namesets)} new namesets, {len(desc_changes)} description changes, {len(sv_changes)} STRING_VALUE changes, {len(expr_changes)} expression changes, {len(alarm_changes)} alarm changes, {len(priority_changes)} priority changes")
 
@@ -1610,6 +1876,14 @@ def main():
 
         elif args.command == 'generate':
             output = args.output or os.path.splitext(args.fhx)[0] + '_NEW' + os.path.splitext(args.fhx)[1]
+            # Validate Excel data before proceeding
+            print("Validating Excel data...")
+            is_valid, validation_errors = validate_excel_for_generation(
+                args.excel, log_callback=print
+            )
+            if not is_valid:
+                print(f"\nGeneration aborted: {len(validation_errors)} issue(s) found.")
+                sys.exit(1)
             nameset_changes, new_namesets, desc_changes, sv_changes, expr_changes, alarm_changes, priority_changes = read_lib_edited_excel(args.excel)
             count = generate_new_lib_fhx(
                 args.fhx, args.setup, nameset_changes, new_namesets, desc_changes, sv_changes, expr_changes, output,
