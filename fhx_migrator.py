@@ -14,6 +14,7 @@ import time
 import threading
 import shutil
 import zipfile
+import queue
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 from datetime import datetime
@@ -1593,6 +1594,7 @@ class FHX_Migrator_App:
         self.setup_path = tk.StringVar()
         self.excel_path = tk.StringVar()
         self._progress_start_time = time.time()
+        self._log_queue = queue.Queue()
         self._build_ui()
 
     def _build_ui(self):
@@ -1687,21 +1689,42 @@ class FHX_Migrator_App:
     def _clear_log(self, log_widget):
         log_widget.delete(1.0, tk.END)
 
-    def _update_progress(self, bar, label, pct, text):
-        bar['value'] = pct
-        elapsed = time.time() - self._progress_start_time
-        if pct > 0:
-            eta = elapsed * (100 - pct) / pct
-            time_str = f"  |  {elapsed:.1f}s elapsed, ~{eta:.0f}s remaining"
+    def _drain_log_queue(self):
+        """Process all pending log/progress messages from the queue in one batch."""
+        count = 0
+        while not self._log_queue.empty():
+            try:
+                msg_type, args = self._log_queue.get_nowait()
+                if msg_type == 'log':
+                    widget, text = args
+                    widget.insert(tk.END, text + "\n")
+                    widget.see(tk.END)
+                elif msg_type == 'progress':
+                    bar, label, pct, text = args
+                    bar['value'] = pct
+                    elapsed = time.time() - self._progress_start_time
+                    if pct > 0:
+                        eta = elapsed * (100 - pct) / pct
+                        time_str = f"  |  {elapsed:.1f}s elapsed, ~{eta:.0f}s remaining"
+                    else:
+                        time_str = f"  |  {elapsed:.1f}s elapsed"
+                    if pct >= 100:
+                        time_str = f"  |  Completed in {elapsed:.1f}s"
+                        label.config(text=f"100% {text}{time_str}", fg="green")
+                    else:
+                        label.config(text=f"{pct}% {text}{time_str}", fg="black")
+                elif msg_type == 'info':
+                    self.root.after(0, *args)
+                count += 1
+            except queue.Empty:
+                break
+        if count > 0:
+            self.root.after(10, self._drain_log_queue)
         else:
-            time_str = f"  |  {elapsed:.1f}s elapsed"
-        if pct >= 100:
-            time_str = f"  |  Completed in {elapsed:.1f}s"
-            label.config(text=f"100% {text}{time_str}", fg="green")
-        else:
-            label.config(text=f"{pct}% {text}{time_str}", fg="black")
+            self.root.after(50, self._drain_log_queue)
 
     def _start_bg_task(self, func, *args):
+        self.root.after(50, self._drain_log_queue)
         t = threading.Thread(target=func, args=args, daemon=True)
         t.start()
 
@@ -1737,37 +1760,30 @@ class FHX_Migrator_App:
         try:
             nameset_comp, sv_comp, expr_comp = compare_lib_and_export(
                 lib_path, setup_path, excel_out,
-                log_callback=lambda m: self.root.after(0, self._log, self.log4, m),
-                progress_callback=lambda p, t: self.root.after(0, self._update_progress, self.progress4, self.prog_label4, p, t)
+                log_callback=lambda m: self._log_queue.put(('log', (self.log4, m))),
+                progress_callback=lambda p, t: self._log_queue.put(('progress', (self.progress4, self.prog_label4, p, t)))
             )
 
-            self.root.after(0, self._log, self.log4, f"\nExcel exported: {excel_out}")
-            self.root.after(0, self._log, self.log4, f"  ENUMERATION_SET: {len(nameset_comp)}")
-            self.root.after(0, self._log, self.log4, f"  STRING_VALUE: {len(sv_comp)}")
-            self.root.after(0, self._log, self.log4, f"  Expression refs: {len(expr_comp)}")
-            self.root.after(0, self._log, self.log4, "\nInstructions:")
-            self.root.after(0, self._log, self.log4, "  1. Open the Excel file")
-            self.root.after(0, self._log, self.log4, "  2. Review 'Namesets' sheet for ENUMERATION_SET definitions")
-            self.root.after(0, self._log, self.log4, "  3. Review 'String Values' sheet for STRING_VALUE references")
-            self.root.after(0, self._log, self.log4, "  4. Review 'Expression Refs' sheet for expression references")
-            self.root.after(0, self._log, self.log4, "  5. Modify 'New Value' columns if needed")
-            self.root.after(0, self._log, self.log4, "  6. Go to Step 2 to generate new FHX")
+            self._log_queue.put(('log', (self.log4, f"\nExcel exported: {excel_out}")))
+            self._log_queue.put(('log', (self.log4, f"  ENUMERATION_SET: {len(nameset_comp)}")))
+            self._log_queue.put(('log', (self.log4, f"  STRING_VALUE: {len(sv_comp)}")))
+            self._log_queue.put(('log', (self.log4, f"  Expression refs: {len(expr_comp)}")))
+            self._log_queue.put(('log', (self.log4, "\nInstructions:")))
+            self._log_queue.put(('log', (self.log4, "  1. Open the Excel file")))
+            self._log_queue.put(('log', (self.log4, "  2. Review 'Namesets' sheet for ENUMERATION_SET definitions")))
+            self._log_queue.put(('log', (self.log4, "  3. Review 'String Values' sheet for STRING_VALUE references")))
+            self._log_queue.put(('log', (self.log4, "  4. Review 'Expression Refs' sheet for expression references")))
+            self._log_queue.put(('log', (self.log4, "  5. Modify 'New Value' columns if needed")))
+            self._log_queue.put(('log', (self.log4, "  6. Go to Step 2 to generate new FHX")))
 
             msg = f"Comparison complete!\n\nENUMERATION_SET: {len(nameset_comp)}\nSTRING_VALUE: {len(sv_comp)}\nExpression refs: {len(expr_comp)}\n\nExcel: {excel_out}"
-            self.root.after(0, messagebox.showinfo, "Success", msg)
+            self._log_queue.put(('info', (messagebox.showinfo, "Success", msg)))
         except tk.TclError:
             pass  # Window was closed
         except Exception as e:
-            try:
-                self.root.after(0, self._log, self.log4, f"\nERROR: {e}")
-                self.root.after(0, messagebox.showerror, "Error", f"Comparison failed:\n{e}")
-            except tk.TclError:
-                pass
+            self._log_queue.put(('info', (messagebox.showerror, "Error", f"Comparison failed:\n{e}")))
         finally:
-            try:
-                self.root.after(0, lambda: self.lib_compare_btn.config(state=tk.NORMAL))
-            except tk.TclError:
-                pass
+            self._log_queue.put(('info', (lambda: self.lib_compare_btn.config(state=tk.NORMAL),)))
 
     def _do_lib_generate(self):
         lib_path = self.lib_gen_path.get().strip()
@@ -1804,10 +1820,10 @@ class FHX_Migrator_App:
     def _lib_generate_worker(self, lib_path, setup_path, excel_path, output_path):
         try:
             # Validate Excel data before proceeding
-            self.root.after(0, self._log, self.log4, "Validating Excel data...")
+            self._log_queue.put(('log', (self.log4, "Validating Excel data...")))
             is_valid, validation_errors = validate_excel_for_generation(
                 excel_path,
-                log_callback=lambda m: self.root.after(0, self._log, self.log4, m),
+                log_callback=lambda m: self._log_queue.put(('log', (self.log4, m))),
             )
             if not is_valid:
                 error_summary = '\n'.join(
@@ -1816,45 +1832,38 @@ class FHX_Migrator_App:
                 )
                 if len(validation_errors) > 20:
                     error_summary += f"\n... and {len(validation_errors) - 20} more issues"
-                self.root.after(0, self._log, self.log4,
-                    f"\nGeneration aborted: {len(validation_errors)} issue(s) found in Excel.")
-                self.root.after(0, messagebox.showwarning, "Excel Validation Failed",
+                self._log_queue.put(('log', (self.log4,
+                    f"\nGeneration aborted: {len(validation_errors)} issue(s) found in Excel.")))
+                self._log_queue.put(('info', (messagebox.showwarning, "Excel Validation Failed",
                     f"Found {len(validation_errors)} issue(s) in Excel:\n\n{error_summary}\n\n"
-                    "Please fix these issues and try again.")
+                    "Please fix these issues and try again.")))
                 return
 
             nameset_changes, new_namesets, desc_changes, sv_changes, expr_changes, alarm_changes, priority_changes = read_lib_edited_excel(excel_path)
-            self.root.after(0, self._log, self.log4, f"Loaded {len(nameset_changes)} value changes, {len(new_namesets)} new namesets, {len(desc_changes)} description changes, {len(sv_changes)} STRING_VALUE changes, {len(expr_changes)} expression changes, {len(alarm_changes)} alarm changes, {len(priority_changes)} priority changes")
+            self._log_queue.put(('log', (self.log4, f"Loaded {len(nameset_changes)} value changes, {len(new_namesets)} new namesets, {len(desc_changes)} description changes, {len(sv_changes)} STRING_VALUE changes, {len(expr_changes)} expression changes, {len(alarm_changes)} alarm changes, {len(priority_changes)} priority changes")))
 
             if not nameset_changes and not new_namesets and not desc_changes and not sv_changes and not expr_changes and not alarm_changes and not priority_changes:
-                self.root.after(0, messagebox.showinfo, "Info", "No changes found in Excel.")
+                self._log_queue.put(('info', (messagebox.showinfo, "Info", "No changes found in Excel.")))
                 return
 
             count = generate_new_lib_fhx(
                 lib_path, setup_path, nameset_changes, new_namesets, desc_changes, sv_changes, expr_changes, output_path,
                 alarm_changes=alarm_changes, priority_changes=priority_changes,
-                log_callback=lambda m: self.root.after(0, self._log, self.log4, m),
-                progress_callback=lambda p, t: self.root.after(0, self._update_progress, self.progress4, self.prog_label4, p, t)
+                log_callback=lambda m: self._log_queue.put(('log', (self.log4, m))),
+                progress_callback=lambda p, t: self._log_queue.put(('progress', (self.progress4, self.prog_label4, p, t)))
             )
-            self.root.after(0, self._log, self.log4, f"\n{'=' * 50}")
-            self.root.after(0, self._log, self.log4, f"Output: {output_path}")
-            self.root.after(0, messagebox.showinfo, "Success",
+            self._log_queue.put(('log', (self.log4, f"\n{'=' * 50}")))
+            self._log_queue.put(('log', (self.log4, f"Output: {output_path}")))
+            self._log_queue.put(('info', (messagebox.showinfo, "Success",
                 f"New FHX generated!\n\n"
                 f"Changes: {count}\n"
-                f"Output: {output_path}")
+                f"Output: {output_path}")))
         except tk.TclError:
             pass  # Window was closed
         except Exception as e:
-            try:
-                self.root.after(0, self._log, self.log4, f"\nERROR: {e}")
-                self.root.after(0, messagebox.showerror, "Error", f"Generation failed:\n{e}")
-            except tk.TclError:
-                pass
+            self._log_queue.put(('info', (messagebox.showerror, "Error", f"Generation failed:\n{e}")))
         finally:
-            try:
-                self.root.after(0, lambda: self.lib_generate_btn.config(state=tk.NORMAL))
-            except tk.TclError:
-                pass
+            self._log_queue.put(('info', (lambda: self.lib_generate_btn.config(state=tk.NORMAL),)))
 
 # ============================================================
 # CLI
