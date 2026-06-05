@@ -1343,53 +1343,71 @@ def generate_new_lib_fhx(lib_path, setup_path, nameset_changes, new_namesets, de
         new_content = new_content.replace(f'LOCALE="{fhx_locale}"', f'LOCALE="{setup_locale}"')
         log(f"  LOCALE: {fhx_locale} -> {setup_locale}")
 
-    # Replace ENTRY NAME values in ENUMERATION_SET blocks
+    # Replace ENTRY NAME values in ENUMERATION_SET blocks (batched by block)
     progress(20, 'Replacing ENTRY NAME values...')
     replace_count = 0
-    block_cache = {}
-    entry_total = len(nameset_changes)
-    for idx, ((set_name, old_entry), new_entry) in enumerate(nameset_changes.items()):
-        if entry_total > 0 and idx % max(1, entry_total // 20) == 0:
-            pct = 20 + int(10 * idx / entry_total)
-            progress(pct, f'Replacing ENTRY NAME... ({idx}/{entry_total})')
+    block_mods = {}  # set_name -> [(old_name, new_name), ...]
+    for (set_name, old_entry), new_entry in nameset_changes.items():
         old_match = re.search(r'NAME="([^"]*)"', old_entry)
         new_match = re.search(r'NAME="([^"]*)"', new_entry)
         if old_match and new_match:
             old_val_name = old_match.group(1)
             new_val_name = new_match.group(1)
-            if old_val_name == new_val_name:
-                continue
-            if set_name not in block_cache:
-                block_pos = find_enum_set_block(new_content, set_name)
-                if block_pos:
-                    block_cache[set_name] = block_pos
-            if set_name in block_cache:
-                bstart, bpos = block_cache[set_name]
-                block = new_content[bstart:bpos]
-                escaped_old = re.escape(old_val_name)
-                entry_pattern = f'(ENTRY\\s+VALUE=\\d+\\s+NAME="){escaped_old}"'
-                new_block, cnt = re.subn(entry_pattern, f'\\g<1>{new_val_name}"', block)
-                if cnt > 0:
-                    new_content = new_content[:bstart] + new_block + new_content[bpos:]
-                    replace_count += cnt
-                    log(f"  {set_name}: {old_val_name} -> {new_val_name} ({cnt} occurrences)")
-                    block_cache[set_name] = (bstart, bstart + len(new_block))
+            if old_val_name != new_val_name:
+                block_mods.setdefault(set_name, []).append((old_val_name, new_val_name))
 
-    # Replace DESCRIPTION in ENUMERATION_SET blocks
+    if block_mods:
+        # Find all block positions on original content (positions stable)
+        block_positions = {}
+        for set_name in block_mods:
+            pos = find_enum_set_block(new_content, set_name)
+            if pos:
+                block_positions[set_name] = pos
+
+        # Extract blocks, modify each independently (no 255M copy)
+        modified_blocks = {}
+        block_list = list(block_mods.items())
+        for idx, (set_name, mods) in enumerate(block_list):
+            if set_name not in block_positions:
+                continue
+            bstart, bpos = block_positions[set_name]
+            block = new_content[bstart:bpos]
+            for old_name, new_name in mods:
+                escaped = re.escape(old_name)
+                pattern = f'(ENTRY\\s+VALUE=\\d+\\s+NAME="){escaped}"'
+                block, cnt = re.subn(pattern, f'\\g<1>{new_name}"', block)
+                replace_count += cnt
+                log(f"  {set_name}: {old_name} -> {new_name} ({cnt} occurrences)")
+            modified_blocks[set_name] = (bstart, bpos, block)
+
+        # Reassemble content in REVERSE order (preserves earlier positions)
+        sorted_blocks = sorted(modified_blocks.items(), key=lambda x: x[1][0], reverse=True)
+        for idx, (set_name, (bstart, bpos, new_block)) in enumerate(sorted_blocks):
+            if idx % 50 == 0:
+                progress(20 + int(8 * idx / len(sorted_blocks)),
+                         f'Reassembling FHX... ({idx}/{len(sorted_blocks)})')
+            new_content = new_content[:bstart] + new_block + new_content[bpos:]
+        progress(28, f'Reassembled {len(sorted_blocks)} blocks')
+
+    # Replace DESCRIPTION in ENUMERATION_SET blocks (batched by block)
     progress(30, 'Replacing descriptions...')
     desc_count = 0
-    desc_block_cache = {}
-    desc_total = len(desc_changes)
-    for idx, (set_name, new_desc) in enumerate(desc_changes.items()):
-        if desc_total > 0 and idx % max(1, desc_total // 20) == 0:
-            pct = 30 + int(10 * idx / desc_total)
-            progress(pct, f'Replacing descriptions... ({idx}/{desc_total})')
-        if set_name not in desc_block_cache:
-            block_pos = find_enum_set_block(new_content, set_name)
-            if block_pos:
-                desc_block_cache[set_name] = block_pos
-        if set_name in desc_block_cache:
-            bstart, bpos = desc_block_cache[set_name]
+    desc_block_mods = {}  # set_name -> new_desc
+    for set_name, new_desc in desc_changes.items():
+        desc_block_mods[set_name] = new_desc
+
+    if desc_block_mods:
+        desc_positions = {}
+        for set_name in desc_block_mods:
+            pos = find_enum_set_block(new_content, set_name)
+            if pos:
+                desc_positions[set_name] = pos
+
+        modified_desc_blocks = {}
+        for set_name, new_desc in desc_block_mods.items():
+            if set_name not in desc_positions:
+                continue
+            bstart, bpos = desc_positions[set_name]
             block = new_content[bstart:bpos]
             desc_match = re.search(r'DESCRIPTION="[^"]*"', block)
             if desc_match:
@@ -1403,10 +1421,17 @@ def generate_new_lib_fhx(lib_path, setup_path, nameset_changes, new_namesets, de
                     new_block = block[:insert_pos] + f'\r\n  DESCRIPTION="{new_desc}"' + block[insert_pos:]
                 else:
                     continue
-            new_content = new_content[:bstart] + new_block + new_content[bpos:]
+            modified_desc_blocks[set_name] = (bstart, bpos, new_block)
             desc_count += 1
             log(f"  {set_name}: DESCRIPTION=\"{new_desc}\"")
-            desc_block_cache[set_name] = (bstart, bstart + len(new_block))
+
+        sorted_desc = sorted(modified_desc_blocks.items(), key=lambda x: x[1][0], reverse=True)
+        for idx, (set_name, (bstart, bpos, new_block)) in enumerate(sorted_desc):
+            if idx % 50 == 0:
+                progress(30 + int(8 * idx / len(sorted_desc)),
+                         f'Reassembling descriptions... ({idx}/{len(sorted_desc)})')
+            new_content = new_content[:bstart] + new_block + new_content[bpos:]
+        progress(38, f'Updated {len(sorted_desc)} descriptions')
 
     # Add new namesets
     progress(40, 'Adding new namesets...')
@@ -1448,90 +1473,87 @@ def generate_new_lib_fhx(lib_path, setup_path, nameset_changes, new_namesets, de
         added_count += 1
         log(f"  Added new nameset: {name}")
 
-    # Replace STRING_VALUE references
+    # Replace STRING_VALUE references (combined single-pass regex)
     progress(50, 'Replacing STRING_VALUE references...')
     sv_count = 0
-    sv_total = len(sv_changes)
-    for idx, (set_name, old_value, new_value) in enumerate(sv_changes):
-        if sv_total > 0 and idx % max(1, sv_total // 20) == 0:
-            pct = 50 + int(20 * idx / sv_total)
-            progress(pct, f'Replacing STRING_VALUE... ({idx}/{sv_total})')
+    sv_replacements = {}  # old_val_name -> new_val_name per set
+    for set_name, old_value, new_value in sv_changes:
         new_name_m = re.match(r'VALUE=\d+\s+NAME="([^"]*)"', new_value)
-        if new_name_m:
-            new_val_name = new_name_m.group(1)
-        else:
-            new_val_name = new_value
-
+        new_val_name = new_name_m.group(1) if new_name_m else new_value
         old_name_m = re.match(r'VALUE=\d+\s+NAME="([^"]*)"', old_value)
-        if old_name_m:
-            old_val_name = old_name_m.group(1)
-        else:
-            old_val_name = old_value
+        old_val_name = old_name_m.group(1) if old_name_m else old_value
+        if old_val_name != new_val_name:
+            sv_replacements[(set_name, old_val_name)] = new_val_name
 
-        if old_val_name == new_val_name:
-            continue
+    if sv_replacements:
+        # Group by set_name for combined patterns
+        sv_by_set = {}
+        for (set_name, old_val), new_val in sv_replacements.items():
+            sv_by_set.setdefault(set_name, {})[old_val] = new_val
 
-        escaped_set = re.escape(set_name)
-        escaped_old = re.escape(old_val_name)
-        pattern = f'(SET="{escaped_set}"[^}}]*?STRING_VALUE="){escaped_old}"'
-        new_content, count = re.subn(pattern, f'\\g<1>{new_val_name}"', new_content, flags=re.DOTALL)
-        if count > 0:
-            sv_count += count
-            log(f"  {set_name}: {old_val_name} -> {new_val_name} ({count} STRING_VALUE occurrences)")
+        for set_name, val_map in sv_by_set.items():
+            escaped_set = re.escape(set_name)
+            old_vals_escaped = [re.escape(v) for v in val_map.keys()]
+            combined_pattern = f'(SET="{escaped_set}"[^}}]*?STRING_VALUE=")({"|".join(old_vals_escaped)})'
+            def sv_repl(m, vm=val_map):
+                return m.group(1) + vm[m.group(2)] + '"'
+            new_content, count = re.subn(combined_pattern, sv_repl, new_content, flags=re.DOTALL)
+            if count > 0:
+                sv_count += count
+                for old_val, new_val in val_map.items():
+                    log(f"  {set_name}: {old_val} -> {new_val}")
 
-    # Replace expression references ($nameset:value)
+    # Replace expression references (combined single-pass regex)
     progress(70, 'Replacing expression references...')
     expr_count = 0
-    expr_total = len(expr_changes)
-    for idx, (set_name, old_value, new_value) in enumerate(expr_changes):
-        if expr_total > 0 and idx % max(1, expr_total // 20) == 0:
-            pct = 70 + int(20 * idx / expr_total)
-            progress(pct, f'Replacing expression refs... ({idx}/{expr_total})')
+    expr_replacements = {}  # (set_name, old_val) -> new_val
+    for set_name, old_value, new_value in expr_changes:
         new_name_m = re.match(r'VALUE=\d+\s+NAME="([^"]*)"', new_value)
         if new_name_m:
             new_val_name = new_name_m.group(1)
         else:
-            # Also accept NAME="value" format (without VALUE=)
             nm = re.match(r'NAME="([^"]*)"', new_value)
             new_val_name = nm.group(1) if nm else new_value
 
         old_name_m = re.match(r'VALUE=\d+\s+NAME="([^"]*)"', old_value)
-        if old_name_m:
-            old_val_name = old_name_m.group(1)
-        else:
-            old_val_name = old_value
+        old_val_name = old_name_m.group(1) if old_name_m else old_value
 
-        # Find actual old name in Library FHX ENUMERATION_SET (may be Chinese/mojibake)
+        # Find actual old name in Library FHX
         actual_old_name = old_val_name
         if set_name in lib_enum_defs:
-            lib_entries = lib_enum_defs[set_name]['entries']
-            for entry in lib_entries:
+            for entry in lib_enum_defs[set_name]['entries']:
                 em = re.match(r'VALUE=(\d+)\s+NAME="([^"]*)"', entry)
                 if em and em.group(2) == old_val_name:
                     break
-                # Match by VALUE number from new_value
                 new_vm = re.match(r'VALUE=(\d+)', new_value)
                 if new_vm and em and em.group(1) == new_vm.group(1):
                     actual_old_name = em.group(2)
                     break
 
-        if actual_old_name == new_val_name:
-            continue
+        if actual_old_name != new_val_name:
+            expr_replacements[(set_name, actual_old_name)] = new_val_name
 
-        escaped_set = re.escape(set_name)
-        escaped_old = re.escape(actual_old_name)
-        # Match '$set_name:old_value' pattern
-        pattern = f"'{escaped_set}:{escaped_old}'"
-        replacement = f"'{set_name}:{new_val_name}'"
-        new_content, count = re.subn(pattern, replacement, new_content)
-        if count > 0:
-            expr_count += count
-            log(f"  {set_name}: {actual_old_name} -> {new_val_name} ({count} expression occurrences)")
+    if expr_replacements:
+        # Group by set_name for combined patterns
+        expr_by_set = {}
+        for (set_name, old_val), new_val in expr_replacements.items():
+            expr_by_set.setdefault(set_name, {})[old_val] = new_val
 
-    # Additional pass: replace expression values from nameset_changes (ENUMERATION_SET entry translations)
+        for set_name, val_map in expr_by_set.items():
+            escaped_set = re.escape(set_name)
+            old_vals_escaped = [re.escape(v) for v in val_map.keys()]
+            combined_pattern = f"'({escaped_set}):({'|'.join(old_vals_escaped)})'"
+            def expr_repl(m, vm=val_map):
+                return f"'{m.group(1)}:{vm[m.group(2)]}'"
+            new_content, count = re.subn(combined_pattern, expr_repl, new_content)
+            if count > 0:
+                expr_count += count
+                for old_val, new_val in val_map.items():
+                    log(f"  {set_name}: {old_val} -> {new_val}")
+
+    # Additional pass: replace expression values from nameset_changes
     progress(85, 'Replacing expression refs from nameset changes...')
     if nameset_changes:
-        # Build mapping: (set_name, old_value_name) -> new_value_name
         ns_expr_map = {}
         for (ns_name, old_entry), new_entry in nameset_changes.items():
             old_m = re.match(r'VALUE=\d+\s+NAME="([^"]*)"', old_entry)
@@ -1539,15 +1561,23 @@ def generate_new_lib_fhx(lib_path, setup_path, nameset_changes, new_namesets, de
             if old_m and new_m and old_m.group(1) != new_m.group(1):
                 ns_expr_map[(ns_name, old_m.group(1))] = new_m.group(1)
 
-        for (ns_name, old_val_name), new_val_name in ns_expr_map.items():
-            escaped_set = re.escape(ns_name)
-            escaped_old = re.escape(old_val_name)
-            pattern = f"'{escaped_set}:{escaped_old}'"
-            replacement = f"'{ns_name}:{new_val_name}'"
-            new_content, count = re.subn(pattern, replacement, new_content)
-            if count > 0:
-                expr_count += count
-                log(f"  {ns_name}: {old_val_name} -> {new_val_name} ({count} expression refs from nameset change)")
+        if ns_expr_map:
+            # Group by set_name for combined patterns
+            ns_by_set = {}
+            for (ns_name, old_val), new_val in ns_expr_map.items():
+                ns_by_set.setdefault(ns_name, {})[old_val] = new_val
+
+            for ns_name, val_map in ns_by_set.items():
+                escaped_set = re.escape(ns_name)
+                old_vals_escaped = [re.escape(v) for v in val_map.keys()]
+                combined_pattern = f"'({escaped_set}):({'|'.join(old_vals_escaped)})'"
+                def ns_repl(m, vm=val_map):
+                    return f"'{m.group(1)}:{vm[m.group(2)]}'"
+                new_content, count = re.subn(combined_pattern, ns_repl, new_content)
+                if count > 0:
+                    expr_count += count
+                    for old_val, new_val in val_map.items():
+                        log(f"  {ns_name}: {old_val} -> {new_val}")
 
     # Replace alarm values
     alarm_count = 0
