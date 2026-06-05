@@ -1691,37 +1691,43 @@ class FHX_Migrator_App:
 
     def _drain_log_queue(self):
         """Process all pending log/progress messages from the queue in one batch."""
-        count = 0
-        while not self._log_queue.empty():
+        try:
+            count = 0
+            while not self._log_queue.empty():
+                try:
+                    msg_type, args = self._log_queue.get_nowait()
+                    if msg_type == 'log':
+                        widget, text = args
+                        widget.insert(tk.END, text + "\n")
+                        widget.see(tk.END)
+                    elif msg_type == 'progress':
+                        bar, label, pct, text = args
+                        bar['value'] = pct
+                        elapsed = time.time() - self._progress_start_time
+                        if pct > 0:
+                            eta = elapsed * (100 - pct) / pct
+                            time_str = f"  |  {elapsed:.1f}s elapsed, ~{eta:.0f}s remaining"
+                        else:
+                            time_str = f"  |  {elapsed:.1f}s elapsed"
+                        if pct >= 100:
+                            time_str = f"  |  Completed in {elapsed:.1f}s"
+                            label.config(text=f"100% {text}{time_str}", fg="green")
+                        else:
+                            label.config(text=f"{pct}% {text}{time_str}", fg="black")
+                    elif msg_type == 'info':
+                        self.root.after(0, *args)
+                    count += 1
+                except queue.Empty:
+                    break
+                except Exception:
+                    continue  # Skip bad message, keep draining
+        except Exception:
+            pass  # Never let drain die
+        finally:
             try:
-                msg_type, args = self._log_queue.get_nowait()
-                if msg_type == 'log':
-                    widget, text = args
-                    widget.insert(tk.END, text + "\n")
-                    widget.see(tk.END)
-                elif msg_type == 'progress':
-                    bar, label, pct, text = args
-                    bar['value'] = pct
-                    elapsed = time.time() - self._progress_start_time
-                    if pct > 0:
-                        eta = elapsed * (100 - pct) / pct
-                        time_str = f"  |  {elapsed:.1f}s elapsed, ~{eta:.0f}s remaining"
-                    else:
-                        time_str = f"  |  {elapsed:.1f}s elapsed"
-                    if pct >= 100:
-                        time_str = f"  |  Completed in {elapsed:.1f}s"
-                        label.config(text=f"100% {text}{time_str}", fg="green")
-                    else:
-                        label.config(text=f"{pct}% {text}{time_str}", fg="black")
-                elif msg_type == 'info':
-                    self.root.after(0, *args)
-                count += 1
-            except queue.Empty:
-                break
-        if count > 0:
-            self.root.after(10, self._drain_log_queue)
-        else:
-            self.root.after(50, self._drain_log_queue)
+                self.root.after(50, self._drain_log_queue)
+            except Exception:
+                pass  # Window closed
 
     def _start_bg_task(self, func, *args):
         self.root.after(50, self._drain_log_queue)
