@@ -10,7 +10,9 @@ Workflow:
 import re
 import os
 import sys
+import time
 import threading
+import shutil
 import zipfile
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
@@ -34,17 +36,47 @@ def validate_xlsx(filepath):
     except zipfile.BadZipFile:
         return False, f"File is not a valid xlsx (not a ZIP file, {size} bytes): {filepath}"
 
+# ============================================================
+# Common helpers
+# ============================================================
+def find_block_end(content, brace_pos):
+    """Find matching closing brace starting from an opening brace position.
+    Returns the position after the closing brace, or -1 if not found."""
+    depth = 1
+    pos = brace_pos + 1
+    while pos < len(content) and depth > 0:
+        if content[pos] == '{':
+            depth += 1
+        elif content[pos] == '}':
+            depth -= 1
+        pos += 1
+    return pos if depth == 0 else -1
+
+def find_enum_set_block(content, set_name):
+    """Find an ENUMERATION_SET block by name.
+    Returns (block_start, block_end) or None."""
+    escaped = re.escape(set_name)
+    pattern = f'ENUMERATION_SET\\s+(?:INDEX=\\d+\\s+)?NAME="{escaped}"'
+    m = re.search(pattern, content)
+    if not m:
+        return None
+    brace_pos = content.find('{', m.start())
+    if brace_pos < 0:
+        return None
+    end = find_block_end(content, brace_pos)
+    if end < 0:
+        return None
+    return (m.start(), end)
+
 def _safe_load_workbook(excel_path):
     """Load an Excel file with retry and fallback. Handles Excel file locking and format issues."""
-    import time
     last_err = None
     for attempt in range(3):
         try:
             return load_workbook(excel_path, read_only=True)
         except Exception as e:
             last_err = e
-            if 'not a zip' in str(e).lower() or 'badzip' in str(e).lower().__class__.__name__:
-                # File might still be locked by Excel, wait and retry
+            if 'not a zip' in str(e).lower() or 'badzip' in str(e).lower():
                 time.sleep(1)
                 continue
             raise
@@ -79,7 +111,7 @@ def read_fhx(filepath):
         return raw[2:].decode('utf-16-be')
     try:
         return raw.decode('utf-8')
-    except:
+    except (UnicodeDecodeError, ValueError):
         return raw.decode('utf-16-le', errors='replace')
 
 def write_fhx(filepath, content):
@@ -100,25 +132,19 @@ def extract_enum_sets(content):
         brace_start = content.find('{', start)
         if brace_start < 0:
             continue
-        depth = 1
-        pos = brace_start + 1
-        while pos < len(content) and depth > 0:
-            if content[pos] == '{':
-                depth += 1
-            elif content[pos] == '}':
-                depth -= 1
-            pos += 1
-        if depth == 0:
-            block = content[start:pos]
-            values = []
-            for em in re.finditer(r'ENTRY\s+VALUE=(\d+)\s+NAME="([^"]*)"', block):
-                entry_str = f'VALUE={em.group(1)} NAME="{em.group(2)}"'
-                values.append(entry_str)
-            cat_match = re.search(r'CATEGORY="([^"]*)"', block)
-            category = cat_match.group(1) if cat_match else ''
-            desc_match = re.search(r'DESCRIPTION="([^"]*)"', block)
-            description = desc_match.group(1) if desc_match else ''
-            enum_sets[name] = {'entries': values, 'category': category, 'description': description}
+        end = find_block_end(content, brace_start)
+        if end < 0:
+            continue
+        block = content[start:end]
+        values = []
+        for em in re.finditer(r'ENTRY\s+VALUE=(\d+)\s+NAME="([^"]*)"', block):
+            entry_str = f'VALUE={em.group(1)} NAME="{em.group(2)}"'
+            values.append(entry_str)
+        cat_match = re.search(r'CATEGORY="([^"]*)"', block)
+        category = cat_match.group(1) if cat_match else ''
+        desc_match = re.search(r'DESCRIPTION="([^"]*)"', block)
+        description = desc_match.group(1) if desc_match else ''
+        enum_sets[name] = {'entries': values, 'category': category, 'description': description}
     return enum_sets
 
 # ============================================================
@@ -164,26 +190,20 @@ def extract_alarms(content):
         brace_start = content.find('{', start)
         if brace_start < 0:
             continue
-        depth = 1
-        pos = brace_start + 1
-        while pos < len(content) and depth > 0:
-            if content[pos] == '{':
-                depth += 1
-            elif content[pos] == '}':
-                depth -= 1
-            pos += 1
-        if depth == 0:
-            block = content[start:pos]
-            fields = {}
-            for field in ('DESCRIPTION', 'ALARM_WORD', 'MESSAGE', 'CATEGORY', 'SUMMARY_NO',
-                          'DEFAULT_PARAM1', 'DEFAULT_PARAM2', 'WAVE_FILE'):
-                fm = re.search(rf'{field}="([^"]*)"', block)
-                if fm:
-                    fields[field] = fm.group(1)
-            fields['ALARM_TYPE'] = alarm_type
-            if alarm_index:
-                fields['INDEX'] = alarm_index
-            alarms[alarm_name] = fields
+        end = find_block_end(content, brace_start)
+        if end < 0:
+            continue
+        block = content[start:end]
+        fields = {}
+        for field in ('DESCRIPTION', 'ALARM_WORD', 'MESSAGE', 'CATEGORY', 'SUMMARY_NO',
+                      'DEFAULT_PARAM1', 'DEFAULT_PARAM2', 'WAVE_FILE'):
+            fm = re.search(rf'{field}="([^"]*)"', block)
+            if fm:
+                fields[field] = fm.group(1)
+        fields['ALARM_TYPE'] = alarm_type
+        if alarm_index:
+            fields['INDEX'] = alarm_index
+        alarms[alarm_name] = fields
     return alarms
 
 def compare_alarms(lib_or_cs_alarms, setup_alarms):
@@ -391,22 +411,14 @@ def replace_alarm_values(content, alarm_changes):
         m = re.search(pattern, content)
         if not m:
             continue
-        alarm_type = m.group(1)
         start = m.start()
         brace_pos = content.find('{', start)
         if brace_pos < 0:
             continue
-        depth = 1
-        pos = brace_pos + 1
-        while pos < len(content) and depth > 0:
-            if content[pos] == '{':
-                depth += 1
-            elif content[pos] == '}':
-                depth -= 1
-            pos += 1
-        if depth != 0:
+        end = find_block_end(content, brace_pos)
+        if end < 0:
             continue
-        block = content[start:pos]
+        block = content[start:end]
         for field, new_val in changes.items():
             fm = re.search(rf'{field}="[^"]*"', block)
             if fm:
@@ -414,7 +426,7 @@ def replace_alarm_values(content, alarm_changes):
                 new_field = f'{field}="{new_val}"'
                 block = block.replace(old_val, new_field, 1)
                 replace_count += 1
-        content = content[:start] + block + content[pos:]
+        content = content[:start] + block + content[end:]
     return content, replace_count
 
 # Hardcoded Chinese→English mapping for standard DeltaV nameset values
@@ -1301,6 +1313,14 @@ def generate_new_lib_fhx(lib_path, setup_path, nameset_changes, new_namesets, de
     progress(0, 'Reading FHX...')
     lib_content = read_fhx(lib_path)
 
+    # Auto-backup original FHX before generating
+    backup_path = os.path.splitext(output_path)[0].replace('_NEW', '_BACKUP') + os.path.splitext(output_path)[1]
+    if backup_path == output_path:
+        backup_path = output_path + '.bak'
+    if os.path.abspath(lib_path) != os.path.abspath(output_path):
+        shutil.copy2(lib_path, backup_path)
+        log(f"  Backup: {backup_path}")
+
     log(f"Reading Setup: {setup_path}")
     progress(10, 'Reading Setup...')
     setup_content = read_fhx(setup_path)
@@ -1339,21 +1359,9 @@ def generate_new_lib_fhx(lib_path, setup_path, nameset_changes, new_namesets, de
             if old_val_name == new_val_name:
                 continue
             if set_name not in block_cache:
-                escaped_set = re.escape(set_name)
-                block_pattern = f'ENUMERATION_SET\\s+(?:INDEX=\\d+\\s+)?NAME="{escaped_set}"'
-                block_match = re.search(block_pattern, new_content)
-                if block_match:
-                    bstart = block_match.start()
-                    brace_pos = new_content.find('{', bstart)
-                    if brace_pos >= 0:
-                        depth = 1
-                        pos = brace_pos + 1
-                        while pos < len(new_content) and depth > 0:
-                            if new_content[pos] == '{': depth += 1
-                            elif new_content[pos] == '}': depth -= 1
-                            pos += 1
-                        if depth == 0:
-                            block_cache[set_name] = (bstart, pos)
+                block_pos = find_enum_set_block(new_content, set_name)
+                if block_pos:
+                    block_cache[set_name] = block_pos
             if set_name in block_cache:
                 bstart, bpos = block_cache[set_name]
                 block = new_content[bstart:bpos]
@@ -1376,21 +1384,9 @@ def generate_new_lib_fhx(lib_path, setup_path, nameset_changes, new_namesets, de
             pct = 30 + int(10 * idx / desc_total)
             progress(pct, f'Replacing descriptions... ({idx}/{desc_total})')
         if set_name not in desc_block_cache:
-            escaped_set = re.escape(set_name)
-            block_pattern = f'ENUMERATION_SET\\s+(?:INDEX=\\d+\\s+)?NAME="{escaped_set}"'
-            block_match = re.search(block_pattern, new_content)
-            if block_match:
-                bstart = block_match.start()
-                brace_pos = new_content.find('{', bstart)
-                if brace_pos >= 0:
-                    depth = 1
-                    pos = brace_pos + 1
-                    while pos < len(new_content) and depth > 0:
-                        if new_content[pos] == '{': depth += 1
-                        elif new_content[pos] == '}': depth -= 1
-                        pos += 1
-                    if depth == 0:
-                        desc_block_cache[set_name] = (bstart, pos)
+            block_pos = find_enum_set_block(new_content, set_name)
+            if block_pos:
+                desc_block_cache[set_name] = block_pos
         if set_name in desc_block_cache:
             bstart, bpos = desc_block_cache[set_name]
             block = new_content[bstart:bpos]
@@ -1596,6 +1592,7 @@ class FHX_Migrator_App:
         self.fhx_path = tk.StringVar()
         self.setup_path = tk.StringVar()
         self.excel_path = tk.StringVar()
+        self._progress_start_time = time.time()
         self._build_ui()
 
     def _build_ui(self):
@@ -1692,7 +1689,17 @@ class FHX_Migrator_App:
 
     def _update_progress(self, bar, label, pct, text):
         bar['value'] = pct
-        label.config(text=f"{pct}% {text}")
+        elapsed = time.time() - self._progress_start_time
+        if pct > 0:
+            eta = elapsed * (100 - pct) / pct
+            time_str = f"  |  {elapsed:.1f}s elapsed, ~{eta:.0f}s remaining"
+        else:
+            time_str = f"  |  {elapsed:.1f}s elapsed"
+        if pct >= 100:
+            time_str = f"  |  Completed in {elapsed:.1f}s"
+            label.config(text=f"100% {text}{time_str}", fg="green")
+        else:
+            label.config(text=f"{pct}% {text}{time_str}", fg="black")
 
     def _start_bg_task(self, func, *args):
         t = threading.Thread(target=func, args=args, daemon=True)
@@ -1723,6 +1730,7 @@ class FHX_Migrator_App:
         self._log(self.log4, "=" * 50)
 
         self.lib_compare_btn.config(state=tk.DISABLED)
+        self._progress_start_time = time.time()
         self._start_bg_task(self._lib_compare_worker, lib_path, setup_path, excel_out)
 
     def _lib_compare_worker(self, lib_path, setup_path, excel_out):
@@ -1747,11 +1755,19 @@ class FHX_Migrator_App:
 
             msg = f"Comparison complete!\n\nENUMERATION_SET: {len(nameset_comp)}\nSTRING_VALUE: {len(sv_comp)}\nExpression refs: {len(expr_comp)}\n\nExcel: {excel_out}"
             self.root.after(0, messagebox.showinfo, "Success", msg)
+        except tk.TclError:
+            pass  # Window was closed
         except Exception as e:
-            self.root.after(0, self._log, self.log4, f"\nERROR: {e}")
-            self.root.after(0, messagebox.showerror, "Error", f"Comparison failed:\n{e}")
+            try:
+                self.root.after(0, self._log, self.log4, f"\nERROR: {e}")
+                self.root.after(0, messagebox.showerror, "Error", f"Comparison failed:\n{e}")
+            except tk.TclError:
+                pass
         finally:
-            self.root.after(0, lambda: self.lib_compare_btn.config(state=tk.NORMAL))
+            try:
+                self.root.after(0, lambda: self.lib_compare_btn.config(state=tk.NORMAL))
+            except tk.TclError:
+                pass
 
     def _do_lib_generate(self):
         lib_path = self.lib_gen_path.get().strip()
@@ -1782,6 +1798,7 @@ class FHX_Migrator_App:
         self._log(self.log4, "=" * 50)
 
         self.lib_generate_btn.config(state=tk.DISABLED)
+        self._progress_start_time = time.time()
         self._start_bg_task(self._lib_generate_worker, lib_path, setup_path, excel_path, output_path)
 
     def _lib_generate_worker(self, lib_path, setup_path, excel_path, output_path):
@@ -1825,22 +1842,54 @@ class FHX_Migrator_App:
                 f"New FHX generated!\n\n"
                 f"Changes: {count}\n"
                 f"Output: {output_path}")
+        except tk.TclError:
+            pass  # Window was closed
         except Exception as e:
-            self.root.after(0, self._log, self.log4, f"\nERROR: {e}")
-            self.root.after(0, messagebox.showerror, "Error", f"Generation failed:\n{e}")
+            try:
+                self.root.after(0, self._log, self.log4, f"\nERROR: {e}")
+                self.root.after(0, messagebox.showerror, "Error", f"Generation failed:\n{e}")
+            except tk.TclError:
+                pass
         finally:
-            self.root.after(0, lambda: self.lib_generate_btn.config(state=tk.NORMAL))
+            try:
+                self.root.after(0, lambda: self.lib_generate_btn.config(state=tk.NORMAL))
+            except tk.TclError:
+                pass
 
 # ============================================================
 # CLI
 # ============================================================
+_cli_start_time = None
+
+def _supports_unicode():
+    """Check if the terminal supports Unicode block characters."""
+    enc = getattr(sys.stdout, 'encoding', '') or ''
+    return enc.lower() not in ('gbk', 'cp936', 'gb2312', 'gb18030', 'ascii', '')
+
 def cli_progress(pct, text=''):
+    global _cli_start_time
+    if _cli_start_time is None:
+        _cli_start_time = time.time()
     bar_len = 40
     filled = int(bar_len * pct / 100)
-    bar = '#' * filled + '-' * (bar_len - filled)
-    print(f'\r  [{bar}] {pct:3d}% {text}', end='', flush=True)
-    if pct >= 100:
-        print()
+    if not hasattr(cli_progress, '_unicode'):
+        cli_progress._unicode = _supports_unicode()
+    if cli_progress._unicode:
+        bar = '█' * filled + '░' * (bar_len - filled)
+    else:
+        bar = '#' * filled + '-' * (bar_len - filled)
+    elapsed = time.time() - _cli_start_time
+    if pct > 0 and pct < 100:
+        eta = elapsed * (100 - pct) / pct
+        time_str = f'  {elapsed:.1f}s  ETA:{eta:.0f}s'
+    elif pct >= 100:
+        time_str = f'  Done in {elapsed:.1f}s'
+        _cli_start_time = None
+        print(f'\r  [{bar}] {pct:3d}% {text}{time_str}' + ' ' * 10)
+        return
+    else:
+        time_str = f'  {elapsed:.1f}s'
+    print(f'\r  [{bar}] {pct:3d}% {text}{time_str}', end='', flush=True)
 
 def main():
     if len(sys.argv) > 1:
