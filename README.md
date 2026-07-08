@@ -1,132 +1,166 @@
+<div align="center">
+
+<img src="exp_logo.png" width="120" alt="DeltaV FHX Nameset Editor">
+
 # DeltaV FHX Nameset Editor
 
-批量翻译/编辑 DeltaV FHX 配置文件中的 nameset 值。面向 Emerson DeltaV 系统工程师，用于将中文 nameset 值迁移为英文，解决 DeltaV 导入时的字符集错误。支持任何 FHX 类型（Library、Control Strategies、Setup、Recipes 等），自动识别并处理。
+[![GitHub stars](https://img.shields.io/github/stars/mobosa/DeltaV-FHX-Nameset-Editor?style=social)](https://github.com/mobosa/DeltaV-FHX-Nameset-Editor/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/mobosa/DeltaV-FHX-Nameset-Editor?style=social)](https://github.com/mobosa/DeltaV-FHX-Nameset-Editor/network/members)
+[![GitHub issues](https://img.shields.io/github/issues/mobosa/DeltaV-FHX-Nameset-Editor)](https://github.com/mobosa/DeltaV-FHX-Nameset-Editor/issues)
+[![GitHub license](https://img.shields.io/github/license/mobosa/DeltaV-FHX-Nameset-Editor)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.8+-blue?logo=python&logoColor=white)](https://www.python.org/)
 
-## 功能特性
+**Batch translate/edit nameset values in DeltaV FHX configuration files**
 
-- **ENUMERATION_SET 定义翻译** — 批量替换 `VALUE=1 NAME="停止中"` 类型的值名称
-- **STRING_VALUE 引用翻译** — 替换 `SET="..." STRING_VALUE="中文值"` 中的引用值
-- **表达式引用翻译** — 替换 `'$phase_state:正在保持'` 等表达式中的中文值
-- **报警块翻译** — SYSTEM_ALARM / USER_ALARM 的 DESCRIPTION、ALARM_WORD、MESSAGE、CATEGORY
-- **优先级名称翻译** — 危急→CRITICAL、警告→WARNING、提示→ADVISORY、记录→LOG
-- **LOCALE 替换** — 根据 New Database.fhx 替换 locale 字符串
-- **新 nameset 添加** — 支持在 FHX 中新增完整的 ENUMERATION_SET 定义块
-- **内建标准 DeltaV nameset 映射** — `$phase_state`、`$recipe_state`、`$sfc_action_states` 等 20+ 套标准 nameset 自动翻译，无需手动填写
-- **自动处理任意 FHX 类型** — Library、Control Strategies、Setup、Recipes 等，无需手动选择类型
+[English](README.md) | [简体中文](README_zh-CN.md)
 
-## 工作流程
+</div>
 
-```
-Step 1: 对比任意 FHX 与 New Database.fhx → 导出 Excel（自动填充英文建议值）
-    ↓
-用户在 Excel 中审核/修改 "New Value" 列
-    ↓
-Step 2: 读取 Excel → 生成新的 FHX 文件（后缀 _NEW）
-```
+---
 
-## 快速开始
+## 🔍 Overview
 
-### 使用打包好的 exe（推荐）
+DeltaV FHX Nameset Editor is a tool designed for **Emerson DeltaV system engineers** to batch translate and edit nameset values in FHX configuration files. It resolves character encoding errors during DeltaV import by syncing nameset definitions between FHX files.
 
-1. 下载 `DeltaV_FHX_Nameset_Editor.exe`（见 [Releases](https://github.com/mobosa/delta-v-fhx-nameset-editor/releases)）
-2. 双击运行，无需安装 Python
-3. **Step 1 区域**：选择 FHX 文件 + New Database.fhx → 点击 **Compare and Export Excel**
-4. 打开生成的 Excel，审核/修改 `New Value` 列
-5. **Step 2 区域**：选择 FHX + New Database.fhx + 编辑后的 Excel → 点击 **Generate New FHX**
+> 💡 Supports any FHX type (Library, Control Strategies, Setup, Recipes, etc.) with automatic detection.
 
-### 从源码运行
+## ✨ Key Features
 
-```bash
-pip install openpyxl
-python fhx_migrator.py          # 启动 GUI
-```
+| Feature | Description |
+|---------|-------------|
+| **ENUMERATION_SET Translation** | Batch replace value names like `VALUE=1 NAME="Stopped"` |
+| **STRING_VALUE Reference Translation** | Replace field references in `SET="..." STRING_VALUE="value"` |
+| **Expression Reference Translation** | Replace values in expressions like `'$phase_state:Held'` |
+| **Alarm Block Translation** | SYSTEM_ALARM / USER_ALARM: DESCRIPTION, ALARM_WORD, MESSAGE, CATEGORY |
+| **Priority Name Translation** | 危急→CRITICAL, 警告→WARNING, 建议→ADVISORY, 记录→LOG |
+| **LOCALE Replacement** | Auto-replace locale strings based on New Database |
+| **New Nameset Support** | Add complete ENUMERATION_SET definition blocks |
+| **Built-in Mappings** | Auto-translate 20+ standard DeltaV namesets (`$phase_state`, `$recipe_state`, etc.) |
 
-## CLI 模式
+## 🚀 Quick Start
 
-不带参数启动 GUI，带参数进入命令行模式：
+### Download Pre-built Executable (Recommended)
+
+1. Download `DeltaV_FHX_Nameset_Editor.exe` from [Releases](https://github.com/mobosa/DeltaV-FHX-Nameset-Editor/releases)
+2. Double-click to run — no Python installation required
+
+### Run from Source
 
 ```bash
-# 对比并导出 Excel
-python fhx_migrator.py compare <任意FHX文件> --setup <New Database.fhx> [-o output.xlsx]
-
-# 从编辑后的 Excel 生成新 FHX
-python fhx_migrator.py generate <任意FHX文件> --setup <New Database.fhx> --excel edited.xlsx [-o output.fhx]
+pip install openpyxl customtkinter
+python fhx_migrator.py
 ```
 
-| 参数 | 说明 |
-|------|------|
-| `compare` | 对比任意 FHX 与 New Database.fhx，导出 Excel |
-| `generate` | 读取 Excel 生成新 FHX |
-| `--setup` | 必填。New Database.fhx 参考文件路径 |
-| `--excel` | `generate` 必填。编辑后的 Excel 文件路径 |
-| `-o, --output` | 可选。输出文件路径，不指定则自动生成 |
+## 📖 Workflow
 
-> 注意：旧版的 `cs-compare`、`cs-generate`、`lib-compare`、`lib-generate` 子命令已移除，统一使用 `compare` / `generate`，工具会自动识别 FHX 类型。
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Step 1: Compare Original Database with New Database        │
+│          → Export Excel (auto-fill suggested values)        │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+         User reviews/edits "New Value" column in Excel
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│  Step 2: Read Excel → Generate new FHX file (suffix _NEW)   │
+└─────────────────────────────────────────────────────────────┘
+```
 
-## Excel 输出格式
+## 💻 CLI Mode
 
-导出的 Excel 包含 5 个工作表：
+```bash
+# Compare and export Excel
+python fhx_migrator.py compare <Original FHX> --setup <New Database> [-o output.xlsx]
 
-| Sheet | 内容 |
-|-------|------|
-| **Namesets** | ENUMERATION_SET 定义对比（FHX 值 vs New Database 值） |
-| **String Values** | STRING_VALUE 引用对比 |
-| **Expression Refs** | 表达式引用对比 |
-| **Alarm Types** | SYSTEM_ALARM / USER_ALARM 字段对比 |
-| **Alarm Priorities** | PRIORITY_NAME 中英文映射 |
+# Generate new FHX from edited Excel
+python fhx_migrator.py generate <Original FHX> --setup <New Database> --excel edited.xlsx [-o output.fhx]
+```
 
-**New Value 列填写规则：**
-- 简单格式：直接写名称，如 `STOP`、`Running`（工具自动转换为 `VALUE=1 NAME="STOP"`）
-- 完整格式：`VALUE=1 NAME="STOP"`
-- 留空：该行不修改
+| Argument | Description |
+|----------|-------------|
+| `compare` | Compare Original Database with New Database, export Excel |
+| `generate` | Read Excel and generate new FHX |
+| `--setup` | **Required.** New Database reference file path |
+| `--excel` | **Required for generate.** Edited Excel file path |
+| `-o, --output` | Optional. Output file path |
 
-蓝色底色 = 已有自动建议，黄色底色 = 需手动填写。
+## 📊 Excel Output Format
 
-生成 FHX 前，工具会自动验证 Excel 数据格式，如发现问题会提示并阻止生成。
+The exported Excel contains 5 worksheets:
 
-## 注意事项
+| Sheet | Content | Status Values |
+|-------|---------|---------------|
+| **Namesets** | ENUMERATION_SET definitions comparison | `Both` / `Original only` |
+| **String Values** | STRING_VALUE reference comparison | — |
+| **Expression Refs** | Expression reference comparison | — |
+| **Alarm Types** | SYSTEM_ALARM / USER_ALARM fields | `Both` / `Old only` / `New only` |
+| **Alarm Priorities** | PRIORITY_NAME mapping | — |
 
-- **Alarm 修改限制**：整个项目导出的 FHX 文件中，并非所有 Alarm 条目都支持直接修改，部分条目可能存在读写权限或结构性限制。**建议整个项目导出的 FHX 不要修改 Alarm 字段。**
-- **如何修改 Alarm**：如需修改 Alarm，可将 Alarm 单独导出后操作 — 在 Step 1 和 Step 2 中两个文件选择窗格都选同一个 FHX 文件即可，编辑生成的 Excel 后重新生成 FHX 并导入。
-- **Nameset 找不到**：不同来源导出的 FHX 文件结构可能存在差异，部分 Nameset 可能无法匹配到建议值。
-- **重复导入问题**：已导入过的数据库再次导入修改过的 FHX 文件时，Alarm 相关属性不会被覆盖。只有空数据库才能完整导入所有属性。建议在空数据库上测试。
-- **分开导出的项目**：如果项目按 Setup.fhx / Library.fhx / Control Strategies 等分开导出，部分 Nameset 可能提取不到建议值。可参考 `Normal Namesets` 附件补充。
-- **大型项目建议拆分导入**：分批导入可以及时关注 DeltaV 导入的报错信息，避免相互覆盖，也便于定位问题所在。
+**New Value column rules:**
+- **Simple format**: Write name directly, e.g. `STOP`, `Running` → auto-converts to `VALUE=1 NAME="STOP"`
+- **Full format**: `VALUE=1 NAME="STOP"`
+- **Leave empty**: Skip this row
 
-## 打包 exe
+> 🔵 Blue background = auto-suggestion available | 🟡 Yellow background = manual input required
+
+## ⚠️ Important Notes
+
+- **Alarm Modification Limits**: Not all Alarm entries support direct modification. **Recommendation: Do not modify Alarm fields in project-exported FHX files.** Export Alarms separately if needed.
+- **Nameset Not Found**: Different FHX export sources may have structural differences. Refer to `Normal Namesets` attachment if needed.
+- **Re-import Issues**: Alarm properties won't be overwritten on re-import. Test on an empty database first.
+- **Large Projects**: Import in batches to monitor errors and avoid overwriting.
+
+## 🛠️ Build Executable
 
 ```bash
 pip install pyinstaller
 pyinstaller FHX_Migration_Tool.spec --noconfirm
 ```
 
-生成的 exe 在 `dist/` 目录下。
+Generated exe is in the `dist/` directory.
 
-## 项目结构
+## 📁 Project Structure
 
 ```
-fhx_core.py                # 后端逻辑（解析、对比、生成、Excel I/O，无 GUI 依赖）
-fhx_migrator.py            # 入口文件（GUI + CLI，从 fhx_core 导入后端）
-FHX_Migration_Tool.spec    # PyInstaller 打包配置
-exp_logo.ico               # 程序图标（ICO）
-exp_logo.png               # 程序图标（PNG）
-test_fhxCoverage.py        # 单元测试
-使用说明.md                 # 详细使用说明（中文）
+DeltaV_FHX_Nameset_Editor/
+├── fhx_core.py              # Backend logic (parsing, comparison, generation, Excel I/O)
+├── fhx_migrator.py          # GUI + CLI entry point
+├── test_fhxCoverage.py      # Unit tests
+├── FHX_Migration_Tool.spec  # PyInstaller build config
+├── exp_logo.ico             # App icon (ICO)
+├── exp_logo.png             # App icon (PNG)
+├── requirements.txt         # Python dependencies
+├── README.md                # This file (English)
+└── README_zh-CN.md          # Chinese documentation
 ```
 
-## 依赖
+## 📋 Dependencies
 
-- Python 3.8+（仅源码运行时需要）
-- `openpyxl` — Excel 读写
-- `customtkinter` — 现代化 GUI（可选，仅 GUI 模式需要）
+| Package | Purpose |
+|---------|---------|
+| `openpyxl` | Excel read/write |
+| `customtkinter` | Modern GUI framework |
+| Python 3.8+ | Runtime (source code only) |
 
-## 测试
+## 🧪 Testing
 
 ```bash
 pip install pytest
 python -m pytest test_fhxCoverage.py -v
 ```
 
-## 作者
+## 📄 License
 
-Jared.Ji (Jared.Ji@emerson.com)
+This project is licensed under the MIT License.
+
+## 👤 Author
+
+**Jared.Ji** — Jared.Ji@emerson.com
+
+---
+
+<div align="center">
+
+**Made with ❤️ for Emerson DeltaV Engineers**
+
+</div>
