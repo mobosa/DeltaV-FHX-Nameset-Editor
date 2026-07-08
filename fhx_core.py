@@ -890,7 +890,7 @@ def write_lib_comparison_excel(nameset_comparison, sv_comparison, expr_compariso
 
     # Sheet 2: STRING_VALUE references
     ws2 = wb.create_sheet("String Values")
-    headers2 = ['SET Name', 'Current Value', 'Count', 'New Value', 'Setup Entries', 'Description']
+    headers2 = ['SET Name', 'Original Value', 'Count', 'New Value', 'Setup Entries', 'Description']
 
     def _fmt_sv(item):
         new_fill = b['light_blue_fill'] if item['suggested'] else b['yellow_fill']
