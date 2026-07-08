@@ -256,11 +256,11 @@ def compare_priority_names(lib_or_cs_names, setup_names, to_chinese=True):
     EN_TO_CN = {
         'CRITICAL': chr(0x5371) + chr(0x6025),   # 危急
         'WARNING': chr(0x8B66) + chr(0x544A),    # 警告
-        'ADVISORY': chr(0x63D0) + chr(0x793A),   # 提示
+        'ADVISORY': chr(0x5EFA) + chr(0x8BAE),   # 建议
         'LOG': chr(0x8BB0) + chr(0x5F55),        # 记录
         'ALERT': chr(0x62A5) + chr(0x8B66),      # 报警
         'INTERLOCK': chr(0x8054) + chr(0x9501),  # 联锁
-        'PROMPT': chr(0x63D0) + chr(0x9192),     # 提醒
+        'PROMPT': chr(0x63D0) + chr(0x793A),     # 提示
     }
     CN_TO_EN = {v: k for k, v in EN_TO_CN.items()}
     trans_map = EN_TO_CN if to_chinese else CN_TO_EN
