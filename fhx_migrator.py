@@ -105,10 +105,10 @@ class FHX_Migrator_App:
 
         r1 = ctk.CTkFrame(s1_inner, fg_color="transparent")
         r1.pack(fill="x", pady=(0, 6))
-        ctk.CTkLabel(r1, text="FHX File", font=("Segoe UI", 12),
-                     text_color=APPLE_COLORS["text_secondary"], width=120).pack(side="left")
+        ctk.CTkLabel(r1, text="Original Database", font=("Segoe UI", 12),
+                     text_color=APPLE_COLORS["text_secondary"], width=140).pack(side="left")
         self._lib_entry = ctk.CTkEntry(r1, textvariable=self.lib_path, font=("Segoe UI", 11),
-                                       placeholder_text="Original FHX file...",
+                                       placeholder_text="Select Original Database file...",
                                        height=32, corner_radius=8, border_width=1,
                                        border_color=APPLE_COLORS["input_border"], fg_color="#FFFFFF")
         self._lib_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
@@ -119,10 +119,10 @@ class FHX_Migrator_App:
 
         r2 = ctk.CTkFrame(s1_inner, fg_color="transparent")
         r2.pack(fill="x", pady=(0, 10))
-        ctk.CTkLabel(r2, text="Database.fhx", font=("Segoe UI", 12),
-                     text_color=APPLE_COLORS["text_secondary"], width=120).pack(side="left")
+        ctk.CTkLabel(r2, text="New Database", font=("Segoe UI", 12),
+                     text_color=APPLE_COLORS["text_secondary"], width=140).pack(side="left")
         self._lib_setup_entry = ctk.CTkEntry(r2, textvariable=self.lib_setup_path, font=("Segoe UI", 11),
-                                              placeholder_text="New Database.fhx...",
+                                              placeholder_text="Select New Database file...",
                                               height=32, corner_radius=8, border_width=1,
                                               border_color=APPLE_COLORS["input_border"], fg_color="#FFFFFF")
         self._lib_setup_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
@@ -152,8 +152,8 @@ class FHX_Migrator_App:
                      font=("Segoe UI", 13, "bold"),
                      text_color=APPLE_COLORS["text_primary"]).pack(anchor="w", pady=(0, 10))
 
-        for label_text, var in [("FHX File", self.lib_gen_path),
-                                 ("Database.fhx", self.lib_gen_setup_path),
+        for label_text, var in [("Original Database", self.lib_gen_path),
+                                 ("New Database", self.lib_gen_setup_path),
                                  ("Edited Excel", self.lib_excel_path)]:
             row = ctk.CTkFrame(s2_inner, fg_color="transparent")
             row.pack(fill="x", pady=(0, 6))
@@ -398,7 +398,13 @@ class FHX_Migrator_App:
                 self.log4.see(tk.END)
                 self.progress4.set(1.0)
                 self.prog_label4.configure(text="Completed", text_color="green")
-                msg = f"Comparison complete!\n\nENUMERATION_SET: {len(nameset_comp)}\nSTRING_VALUE: {len(sv_comp)}\nExpression refs: {len(expr_comp)}\n\nExcel: {excel_out}"
+
+                # 继承填充 Step 2
+                self.lib_gen_path.set(lib_path)
+                self.lib_gen_setup_path.set(setup_path)
+                self.lib_excel_path.set(excel_out)
+
+                msg = f"Comparison complete!\n\nENUMERATION_SET: {len(nameset_comp)}\nSTRING_VALUE: {len(sv_comp)}\nExpression refs: {len(expr_comp)}\n\nExcel: {excel_out}\n\nStep 2 auto-filled with same files."
                 messagebox.showinfo("Success", msg)
             self.root.after(0, _show_compare_result)
         except tk.TclError:

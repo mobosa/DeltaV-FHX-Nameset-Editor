@@ -661,7 +661,7 @@ def compare_lib_and_export(lib_path, setup_path, output_path, log_callback=None,
             category = setup_cat
             value_count_mismatch = len(lib_vals) != len(setup_vals)
         else:
-            status = 'FHX only'
+            status = 'Original only'
             default_suggestion = ''
             category = lib_cat
             value_count_mismatch = False
