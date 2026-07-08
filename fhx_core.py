@@ -870,7 +870,7 @@ def write_lib_comparison_excel(nameset_comparison, sv_comparison, expr_compariso
     # Sheet 1: ENUMERATION_SET definitions
     ws1 = wb.active
     ws1.title = "Namesets"
-    headers1 = ['SET Name', 'Category', 'Status', 'FHX Values', 'New Value', 'Description']
+    headers1 = ['SET Name', 'Category', 'Status', 'Original Values', 'New Value', 'Description']
 
     def _fmt_nameset(item):
         status = item['status']
@@ -958,7 +958,7 @@ def validate_excel_for_generation(excel_path, log_callback=None):
                     errors.append({
                         'sheet': 'Namesets', 'row': row_idx,
                         'column': 'New Value (E)',
-                        'message': f'New nameset "{set_name}" has no entries in New Value or FHX Values column',
+                        'message': f'New nameset "{set_name}" has no entries in New Value or Original Values column',
                     })
                     continue
                 entries_text = [v.strip() for v in str(entries_str).split('\n') if v.strip()]
