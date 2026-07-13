@@ -1,7 +1,5 @@
 <div align="center">
 
-<img src="exp_logo.png" width="120" alt="DeltaV FHX Nameset Editor">
-
 # DeltaV FHX Nameset Editor
 
 [![GitHub stars](https://img.shields.io/github/stars/mobosa/DeltaV-FHX-Nameset-Editor?style=social)](https://github.com/mobosa/DeltaV-FHX-Nameset-Editor/stargazers)
