@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="exp_logo.png" width="120" alt="DeltaV FHX Nameset Editor">
+<alt="DeltaV FHX Nameset Editor">
 
 # DeltaV FHX Nameset Editor
 
