@@ -1,6 +1,6 @@
 <div align="center">
 
-<alt="DeltaV FHX Nameset Editor">
+
 
 # DeltaV FHX Nameset Editor
 
